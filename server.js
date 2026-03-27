@@ -8,50 +8,79 @@ const pool = require("./db");
 
 const app = express();
 
+
+// ✅ CORS FIX (IMPORTANT)
 app.use(cors({
-  origin: ["https://golf-frontend-mu.vercel.app"],
-  methods: ["GET", "POST", "PUT", "DELETE"],
+  origin: "https://golf-frontend-mu.vercel.app",
+  methods: ["GET", "POST"],
   credentials: true
 }));
+
 app.options("*", cors());
+
 app.use(express.json());
 
-/* ================= AUTH ================= */
 
-app.post("/users", async (req, res) => {
-  const { email, password } = req.body;
-
-  const hash = await bcrypt.hash(password, 10);
-
-  const result = await pool.query(
-    "INSERT INTO users (email,password) VALUES ($1,$2) RETURNING *",
-    [email, hash]
-  );
-
-  res.json(result.rows[0]);
+// ✅ TEST ROUTE (optional)
+app.get("/", (req, res) => {
+  res.send("API running");
 });
 
+
+// ================== REGISTER ==================
+app.post("/users", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const hash = await bcrypt.hash(password, 10);
+
+    const result = await pool.query(
+      "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING *",
+      [email, hash]
+    );
+
+    res.json(result.rows[0]);
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "Register failed" });
+  }
+});
+
+
+// ================== LOGIN ==================
 app.post("/login", async (req, res) => {
-  const { email, password } = req.body;
+  console.log("LOGIN API CALLED ✅"); // 🔥 DEBUG
 
-  const result = await pool.query(
-    "SELECT * FROM users WHERE email=$1",
-    [email]
-  );
+  try {
+    const { email, password } = req.body;
 
-  if (result.rows.length === 0)
-    return res.status(400).json({ message: "User not found" });
+    const user = await pool.query(
+      "SELECT * FROM users WHERE email=$1",
+      [email]
+    );
 
-  const user = result.rows[0];
+    if (user.rows.length === 0) {
+      return res.status(400).json({ error: "User not found" });
+    }
 
-  const match = await bcrypt.compare(password, user.password);
+    const valid = await bcrypt.compare(password, user.rows[0].password);
 
-  if (!match)
-    return res.status(400).json({ message: "Wrong password" });
+    if (!valid) {
+      return res.status(400).json({ error: "Invalid password" });
+    }
 
-  const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET);
+    res.json({
+      user: {
+        id: user.rows[0].id,
+        email: user.rows[0].email
+      }
+    });
 
-  res.json({ user, token });
+  } catch (err) {
+    console.log("ERROR:", err);
+    res.status(500).json({ error: "Login failed" });
+  }
 });
 
 /* ================= USERS ================= */
