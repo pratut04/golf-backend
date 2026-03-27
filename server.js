@@ -9,19 +9,24 @@ const pool = require("./db");
 const app = express();
 
 
-// ✅ CORS FIX (IMPORTANT)
+// ✅ CORS FIX (FINAL)
 app.use(cors({
   origin: "https://golf-frontend-mu.vercel.app",
-  methods: ["GET", "POST"],
+  methods: ["GET", "POST", "PUT", "DELETE"],
   credentials: true
 }));
 
-app.options("*", cors());
-
 app.use(express.json());
 
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "https://golf-frontend-mu.vercel.app");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE");
+  next();
+});
 
-// ✅ TEST ROUTE (optional)
+
+// ✅ TEST ROUTE
 app.get("/", (req, res) => {
   res.send("API running");
 });
