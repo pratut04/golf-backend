@@ -8,7 +8,9 @@ const pool = require("./db");
 
 const app = express();
 
-app.use(cors());
+app.use(cors({
+  origin: "https://golf-frontend-mu.vercel.app"
+}));
 app.use(express.json());
 
 /* ================= AUTH ================= */
