@@ -69,8 +69,14 @@ app.post("/login", async (req, res) => {
 
     const user = result.rows[0];
 
-    // ✅ Compare hashed password
-    const isMatch = await bcrypt.compare(password, user.password);
+    let isMatch = false;
+
+    
+    if (user.password.startsWith("$2b$")) {
+      isMatch = await bcrypt.compare(password, user.password);
+    } else {
+      isMatch = password === user.password;
+    }
 
     if (!isMatch) {
       return res.status(400).json({ error: "Wrong password" });
@@ -84,7 +90,7 @@ app.post("/login", async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("LOGIN ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
