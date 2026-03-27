@@ -55,39 +55,39 @@ app.post("/users", async (req, res) => {
 
 // ================== LOGIN ==================
 app.post("/login", async (req, res) => {
-  console.log("LOGIN API CALLED ✅"); // 🔥 DEBUG
-
   try {
     const { email, password } = req.body;
 
-    const user = await pool.query(
-      "SELECT * FROM users WHERE email=$1",
+    const result = await pool.query(
+      "SELECT * FROM users WHERE email = $1",
       [email]
     );
 
-    if (user.rows.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(400).json({ error: "User not found" });
     }
 
-    const valid = await bcrypt.compare(password, user.rows[0].password);
+    const user = result.rows[0];
 
-    if (!valid) {
-      return res.status(400).json({ error: "Invalid password" });
+    // ✅ Compare hashed password
+    const isMatch = await bcrypt.compare(password, user.password);
+
+    if (!isMatch) {
+      return res.status(400).json({ error: "Wrong password" });
     }
 
     res.json({
       user: {
-        id: user.rows[0].id,
-        email: user.rows[0].email
+        id: user.id,
+        email: user.email
       }
     });
 
   } catch (err) {
-    console.log("ERROR:", err);
-    res.status(500).json({ error: "Login failed" });
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
   }
 });
-
 /* ================= USERS ================= */
 
 app.get("/users", async (req, res) => {
