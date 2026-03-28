@@ -60,9 +60,6 @@ app.post("/users", async (req, res) => {
 // ================== LOGIN ==================
 app.post("/login", async (req, res) => {
   try {
-    console.log("LOGIN HIT");
-    console.log("BODY:", req.body);
-
     const { email, password } = req.body;
 
     const result = await pool.query(
@@ -76,27 +73,19 @@ app.post("/login", async (req, res) => {
 
     const user = result.rows[0];
 
-    let isMatch = false;
-
-    if (user.password && user.password.startsWith("$2b$")) {
-      isMatch = await bcrypt.compare(password, user.password);
-    } else {
-      isMatch = password === user.password;
-    }
+    const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
       return res.status(400).json({ error: "Wrong password" });
     }
 
-    // ✅ CREATE TOKEN
     const token = jwt.sign(
-      { id: user.id, email: user.email },
+      { id: user.id },
       process.env.JWT_SECRET || "secret123",
       { expiresIn: "1d" }
     );
 
-    // ✅ SEND TOKEN + USER
-    return res.json({
+    res.json({
       token,
       user: {
         id: user.id,
@@ -106,7 +95,7 @@ app.post("/login", async (req, res) => {
 
   } catch (err) {
     console.error("LOGIN ERROR:", err);
-    return res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: "Server error" });
   }
 });
 
@@ -118,14 +107,32 @@ app.get("/users", async (req, res) => {
 
 // ================== SCORES ==================
 app.post("/scores", async (req, res) => {
-  const { user_id, score } = req.body;
+  try {
+    const { user_id, score } = req.body;
 
-  await pool.query(
-    "INSERT INTO scores (user_id,score) VALUES ($1,$2)",
-    [user_id, score]
-  );
+    // insert score
+    await pool.query(
+      "INSERT INTO scores (user_id, score) VALUES ($1,$2)",
+      [user_id, score]
+    );
 
-  res.json({ message: "Score added" });
+    await pool.query(`
+      DELETE FROM scores
+      WHERE id NOT IN (
+        SELECT id FROM scores
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 5
+      )
+      AND user_id = $1
+    `, [user_id]);
+
+    res.json({ message: "Score added (max 5 kept)" });
+
+  } catch (err) {
+    console.error("SCORE ERROR:", err);
+    res.status(500).json({ error: "Score failed" });
+  }
 });
 
 app.get("/scores", async (req, res) => {
@@ -152,22 +159,40 @@ app.get("/charities", async (req, res) => {
 });
 
 app.post("/select-charity", async (req, res) => {
-  const { user_id, charity_id } = req.body;
+  try {
+    const { user_id, charity_id } = req.body;
 
-  await pool.query(
-    "UPDATE users SET charity_id=$1 WHERE id=$2",
-    [charity_id, user_id]
-  );
+    await pool.query(
+      "UPDATE users SET charity_id=$1 WHERE id=$2",
+      [charity_id, user_id]
+    );
 
-  res.json({ message: "Charity selected" });
+    res.json({ message: "Charity selected" });
+
+  } catch (err) {
+    console.error("CHARITY ERROR:", err);
+    res.status(500).json({ error: "Charity failed" });
+  }
 });
 
 // ================== DASHBOARD ==================
 app.get("/dashboard/:id", async (req, res) => {
   const id = req.params.id;
 
-  const user = await pool.query("SELECT * FROM users WHERE id=$1", [id]);
-  const scores = await pool.query("SELECT * FROM scores WHERE user_id=$1", [id]);
+
+  const user = await pool.query(`
+    SELECT u.*, c.name AS charity_name
+    FROM users u
+    LEFT JOIN charities c ON u.charity_id = c.id
+    WHERE u.id = $1
+  `, [id]);
+
+
+  const scores = await pool.query(`
+    SELECT * FROM scores
+    WHERE user_id = $1
+    ORDER BY created_at DESC
+  `, [id]);
 
   res.json({
     user: user.rows[0],
