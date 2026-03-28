@@ -8,3 +8,4 @@ const pool = new Pool({
 });
 
 module.exports = pool;
+console.log("✅ DB FILE IS USED");
