@@ -6,31 +6,28 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const pool = require("./db");
 
-console.log("Db test Started");
+const app = express();
+
+// ================== DB CHECK ==================
+console.log("🚀 DB test started...");
+
 (async () => {
   try {
     const res = await pool.query("SELECT NOW()");
-    console.log("✅ DB CONNECTED:", res.rows[0]);
+    console.log("✅ DB CONNECTED:", res.rows[0].now);
   } catch (err) {
-    console.error("❌ DB ERROR:", err);
+    console.error("❌ DB CONNECTION ERROR:", err.message);
   }
 })();
 
-const app = express();
-
-
-// ✅ CORS FIX (FINAL)
+// ================== MIDDLEWARE ==================
 app.use(cors());
-
 app.use(express.json());
 
-
-
-// ✅ TEST ROUTE
+// ================== TEST ==================
 app.get("/", (req, res) => {
   res.send("Server running 🚀");
 });
-
 
 // ================== REGISTER ==================
 app.post("/users", async (req, res) => {
@@ -40,24 +37,21 @@ app.post("/users", async (req, res) => {
     const hash = await bcrypt.hash(password, 10);
 
     const result = await pool.query(
-      "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING *",
+      "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id,email",
       [email, hash]
     );
 
     res.json(result.rows[0]);
-
   } catch (err) {
-    console.log(err);
+    console.error("REGISTER ERROR:", err);
     res.status(500).json({ error: "Register failed" });
   }
 });
 
-
 // ================== LOGIN ==================
 app.post("/login", async (req, res) => {
   try {
-    console.log("LOGIN HIT");
-    console.log("BODY:", req.body);
+    console.log("LOGIN HIT:", req.body);
 
     const { email, password } = req.body;
 
@@ -72,20 +66,23 @@ app.post("/login", async (req, res) => {
 
     const user = result.rows[0];
 
-    let isMatch = false;
-
-    if (user.password && user.password.startsWith("$2b$")) {
-      isMatch = await bcrypt.compare(password, user.password);
-    } else {
-      isMatch = password === user.password;
-    }
+    // 🔐 Compare password
+    const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
       return res.status(400).json({ error: "Wrong password" });
     }
 
-    // ✅ ALWAYS send response
-    return res.json({
+    // 🔐 Create token
+    const token = jwt.sign(
+      { id: user.id },
+      process.env.JWT_SECRET,
+      { expiresIn: "1d" }
+    );
+
+    // ✅ Send token + user
+    res.json({
+      token,
       user: {
         id: user.id,
         email: user.email
@@ -94,22 +91,17 @@ app.post("/login", async (req, res) => {
 
   } catch (err) {
     console.error("LOGIN ERROR:", err);
-
-    // ✅ ALWAYS send response
-    return res.status(500).json({
-      error: "Server error"
-    });
+    res.status(500).json({ error: "Server error" });
   }
 });
-/* ================= USERS ================= */
 
+// ================== USERS ==================
 app.get("/users", async (req, res) => {
   const result = await pool.query("SELECT id,email FROM users");
   res.json(result.rows);
 });
 
-/* ================= SCORES ================= */
-
+// ================== SCORES ==================
 app.post("/scores", async (req, res) => {
   const { user_id, score } = req.body;
 
@@ -126,8 +118,7 @@ app.get("/scores", async (req, res) => {
   res.json(result.rows);
 });
 
-/* ================= SUBSCRIBE ================= */
-
+// ================== SUBSCRIBE ==================
 app.post("/subscribe", async (req, res) => {
   const { user_id } = req.body;
 
@@ -139,8 +130,7 @@ app.post("/subscribe", async (req, res) => {
   res.json(result.rows[0]);
 });
 
-/* ================= CHARITIES ================= */
-
+// ================== CHARITIES ==================
 app.get("/charities", async (req, res) => {
   const result = await pool.query("SELECT * FROM charities");
   res.json(result.rows);
@@ -157,8 +147,7 @@ app.post("/select-charity", async (req, res) => {
   res.json({ message: "Charity selected" });
 });
 
-/* ================= DASHBOARD ================= */
-
+// ================== DASHBOARD ==================
 app.get("/dashboard/:id", async (req, res) => {
   const id = req.params.id;
 
@@ -171,8 +160,7 @@ app.get("/dashboard/:id", async (req, res) => {
   });
 });
 
-/* ================= DRAW ================= */
-
+// ================== DRAW ==================
 app.post("/draw", async (req, res) => {
   const number = Math.floor(Math.random() * 100);
 
@@ -184,8 +172,7 @@ app.post("/draw", async (req, res) => {
   res.json(result.rows[0]);
 });
 
-/* ================= RESULT ================= */
-
+// ================== RESULT ==================
 app.post("/check-result", async (req, res) => {
   const { user_id } = req.body;
 
@@ -210,8 +197,7 @@ app.post("/check-result", async (req, res) => {
   });
 });
 
-/* ================= LEADERBOARD ================= */
-
+// ================== LEADERBOARD ==================
 app.get("/leaderboard", async (req, res) => {
   const result = await pool.query(`
     SELECT u.email, MAX(s.score) as best_score
@@ -225,6 +211,9 @@ app.get("/leaderboard", async (req, res) => {
   res.json(result.rows);
 });
 
-/* ================= SERVER ================= */
+// ================== SERVER ==================
+const PORT = process.env.PORT || 5000;
 
-app.listen(5000, () => console.log("Server running 🚀"));
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
