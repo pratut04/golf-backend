@@ -6,7 +6,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const pool = require("./db");
 
-
+console.log("Db test Started");
 (async () => {
   try {
     const res = await pool.query("SELECT NOW()");
