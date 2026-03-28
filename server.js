@@ -20,11 +20,7 @@ const app = express();
 
 // ================== MIDDLEWARE ==================
 app.use(cors({
-  origin: [
-    "https://golf-frontend-mu.vercel.app",
-    "https://golf-frontend-ntp5l97z7-pratut04s-projects.vercel.app"
-  ],
-  credentials: true
+  origin: true
 }));
 app.use(express.json());
 
