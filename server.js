@@ -21,7 +21,16 @@ console.log("🚀 DB test started...");
 })();
 
 // ================== MIDDLEWARE ==================
-app.use(cors());
+const corsOptions = {
+  origin: "https://golf-frontend-mu.vercel.app",
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
 app.use(express.json());
 
 // ================== TEST ==================
