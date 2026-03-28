@@ -51,7 +51,8 @@ app.post("/users", async (req, res) => {
 // ================== LOGIN ==================
 app.post("/login", async (req, res) => {
   try {
-    console.log("LOGIN HIT:", req.body);
+    console.log("LOGIN HIT");
+    console.log("BODY:", req.body);
 
     const { email, password } = req.body;
 
@@ -66,22 +67,27 @@ app.post("/login", async (req, res) => {
 
     const user = result.rows[0];
 
-    // 🔐 Compare password
-    const isMatch = await bcrypt.compare(password, user.password);
+    let isMatch = false;
+
+    if (user.password && user.password.startsWith("$2b$")) {
+      isMatch = await bcrypt.compare(password, user.password);
+    } else {
+      isMatch = password === user.password;
+    }
 
     if (!isMatch) {
       return res.status(400).json({ error: "Wrong password" });
     }
 
-    // 🔐 Create token
+    // ✅ CREATE TOKEN
     const token = jwt.sign(
-      { id: user.id },
-      process.env.JWT_SECRET,
+      { id: user.id, email: user.email },
+      process.env.JWT_SECRET || "secret123",
       { expiresIn: "1d" }
     );
 
-    // ✅ Send token + user
-    res.json({
+    // ✅ SEND TOKEN + USER
+    return res.json({
       token,
       user: {
         id: user.id,
@@ -91,7 +97,7 @@ app.post("/login", async (req, res) => {
 
   } catch (err) {
     console.error("LOGIN ERROR:", err);
-    res.status(500).json({ error: "Server error" });
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
