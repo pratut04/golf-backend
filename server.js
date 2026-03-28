@@ -56,7 +56,8 @@ app.post("/users", async (req, res) => {
 // ================== LOGIN ==================
 app.post("/login", async (req, res) => {
   try {
-    console.log("BODY:", req.body); // 👈 DEBUG
+    console.log("LOGIN HIT");
+    console.log("BODY:", req.body);
 
     const { email, password } = req.body;
 
@@ -65,23 +66,15 @@ app.post("/login", async (req, res) => {
       [email]
     );
 
-    console.log("DB RESULT:", result.rows); // 👈 DEBUG
-
     if (result.rows.length === 0) {
       return res.status(400).json({ error: "User not found" });
     }
 
     const user = result.rows[0];
 
-    console.log("USER:", user); // 👈 DEBUG
-
     let isMatch = false;
 
-    if (!user.password) {
-      throw new Error("Password missing in DB");
-    }
-
-    if (user.password.startsWith("$2b$")) {
+    if (user.password && user.password.startsWith("$2b$")) {
       isMatch = await bcrypt.compare(password, user.password);
     } else {
       isMatch = password === user.password;
@@ -91,7 +84,8 @@ app.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Wrong password" });
     }
 
-    res.json({
+    // ✅ ALWAYS send response
+    return res.json({
       user: {
         id: user.id,
         email: user.email
@@ -99,8 +93,12 @@ app.post("/login", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("LOGIN ERROR FULL:", err); // 👈 VERY IMPORTANT
-    res.status(500).json({ error: err.message });
+    console.error("LOGIN ERROR:", err);
+
+    // ✅ ALWAYS send response
+    return res.status(500).json({
+      error: "Server error"
+    });
   }
 });
 /* ================= USERS ================= */
