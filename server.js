@@ -9,13 +9,12 @@ const pool = require("./db");
 const app = express();
 
 // ================== DB CHECK ==================
-console.log("🚀 DB test started...");
 (async () => {
   try {
     const res = await pool.query("SELECT NOW()");
     console.log("✅ DB CONNECTED:", res.rows[0].now);
   } catch (err) {
-    console.error("❌ DB CONNECTION ERROR:", err.message);
+    console.error("❌ DB ERROR:", err.message);
   }
 })();
 
@@ -24,7 +23,6 @@ app.use(cors({
   origin: "https://golf-frontend-mu.vercel.app",
   credentials: true
 }));
-
 app.use(express.json());
 
 // ================== TEST ==================
@@ -43,7 +41,7 @@ app.post("/users", async (req, res) => {
     );
 
     if (exists.rows.length > 0) {
-      return res.status(400).json({ error: "User already exists" });
+      return res.status(400).json({ error: "User exists" });
     }
 
     const hash = await bcrypt.hash(password, 10);
@@ -56,7 +54,6 @@ app.post("/users", async (req, res) => {
     res.json(result.rows[0]);
 
   } catch (err) {
-    console.error("REGISTER ERROR:", err);
     res.status(500).json({ error: "Register failed" });
   }
 });
@@ -77,9 +74,8 @@ app.post("/login", async (req, res) => {
 
     const user = result.rows[0];
 
-    const isMatch = await bcrypt.compare(password, user.password);
-
-    if (!isMatch) {
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
       return res.status(400).json({ error: "Wrong password" });
     }
 
@@ -94,24 +90,18 @@ app.post("/login", async (req, res) => {
       user: { id: user.id, email: user.email }
     });
 
-  } catch (err) {
-    console.error("LOGIN ERROR:", err);
-    res.status(500).json({ error: "Server error" });
+  } catch {
+    res.status(500).json({ error: "Login failed" });
   }
 });
 
 // ================== USERS ==================
 app.get("/users", async (req, res) => {
-  try {
-    const result = await pool.query("SELECT id,email FROM users");
-    res.json(result.rows);
-  } catch (err) {
-    console.error("USERS ERROR:", err);
-    res.status(500).json({ error: "Users fetch failed" });
-  }
+  const result = await pool.query("SELECT id,email FROM users");
+  res.json(result.rows);
 });
 
-// ================== SCORES (FIXED) ==================
+// ================== SCORES ==================
 app.post("/scores", async (req, res) => {
   try {
     const { user_id, score, created_at } = req.body;
@@ -121,18 +111,17 @@ app.post("/scores", async (req, res) => {
     }
 
     if (score < 1 || score > 45) {
-      return res.status(400).json({ error: "Score must be 1–45" });
+      return res.status(400).json({ error: "Score 1–45 only" });
     }
 
-    const finalDate = created_at || new Date();
+    const date = created_at || new Date();
 
-    // ✅ USE "date" COLUMN
     await pool.query(
       "INSERT INTO scores (user_id, score, date) VALUES ($1,$2,$3)",
-      [user_id, score, finalDate]
+      [user_id, score, date]
     );
 
-    // ✅ KEEP ONLY LAST 5
+    // keep last 5
     await pool.query(`
       DELETE FROM scores
       WHERE id NOT IN (
@@ -143,23 +132,17 @@ app.post("/scores", async (req, res) => {
       ) AND user_id=$1
     `, [user_id]);
 
-    res.json({ message: "Score saved ✅" });
+    res.json({ message: "Score saved" });
 
   } catch (err) {
-    console.error("SCORE ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 // ================== GET SCORES ==================
 app.get("/scores", async (req, res) => {
-  try {
-    const result = await pool.query("SELECT * FROM scores");
-    res.json(result.rows);
-  } catch (err) {
-    console.error("SCORES ERROR:", err);
-    res.status(500).json({ error: "Scores fetch failed" });
-  }
+  const result = await pool.query("SELECT * FROM scores");
+  res.json(result.rows);
 });
 
 // ================== CHARITIES ==================
@@ -168,24 +151,58 @@ app.get("/charities", async (req, res) => {
   res.json(result.rows);
 });
 
-app.post("/select-charity", async (req, res) => {
+// ✅ ADMIN ADD CHARITY
+app.post("/charities", async (req, res) => {
   try {
-    const { user_id, charity_id } = req.body;
+    const { name, description, image } = req.body;
 
     await pool.query(
-      "UPDATE users SET charity_id=$1 WHERE id=$2",
-      [charity_id, user_id]
+      "INSERT INTO charities (name, description, image) VALUES ($1,$2,$3)",
+      [name, description, image]
     );
 
-    res.json({ message: "Charity selected" });
+    res.json({ message: "Charity added" });
 
   } catch (err) {
-    console.error("CHARITY ERROR:", err);
-    res.status(500).json({ error: "Charity failed" });
+    res.status(500).json({ error: "Add charity failed" });
   }
 });
 
-// ================== DASHBOARD (FIXED) ==================
+// ================== SELECT CHARITY ==================
+app.post("/select-charity", async (req, res) => {
+  const { user_id, charity_id } = req.body;
+
+  await pool.query(
+    "UPDATE users SET charity_id=$1 WHERE id=$2",
+    [charity_id, user_id]
+  );
+
+  res.json({ message: "Selected" });
+});
+
+// ================== SUBSCRIPTION ==================
+app.post("/subscribe", async (req, res) => {
+  try {
+    const { user_id, type } = req.body;
+
+    let days = type === "yearly" ? 365 : 30;
+
+    await pool.query(`
+      UPDATE users 
+      SET subscription_status='active',
+          subscription_type=$1,
+          subscription_end = NOW() + INTERVAL '${days} days'
+      WHERE id=$2
+    `, [type, user_id]);
+
+    res.json({ message: "Subscribed" });
+
+  } catch {
+    res.status(500).json({ error: "Subscription failed" });
+  }
+});
+
+// ================== DASHBOARD ==================
 app.get("/dashboard/:id", async (req, res) => {
   const id = req.params.id;
 
@@ -202,10 +219,14 @@ app.get("/dashboard/:id", async (req, res) => {
     ORDER BY date DESC
   `, [id]);
 
+  const winnings = await pool.query(`
+    SELECT * FROM winnings WHERE user_id=$1
+  `, [id]);
+
   res.json({
     user: user.rows[0],
     scores: scores.rows,
-    winnings: []
+    winnings: winnings.rows
   });
 });
 
@@ -229,14 +250,18 @@ app.post("/check-result", async (req, res) => {
     "SELECT * FROM draws ORDER BY id DESC LIMIT 1"
   );
 
+  if (draw.rows.length === 0) {
+    return res.json({ result: "No draw yet" });
+  }
+
+  const drawNumber = draw.rows[0].numbers;
+
   const scores = await pool.query(
     "SELECT * FROM scores WHERE user_id=$1",
     [user_id]
   );
 
-  const drawNumber = draw.rows[0].numbers;
-
-  let matchCount = scores.rows.filter(
+  const matchCount = scores.rows.filter(
     s => s.score === drawNumber
   ).length;
 
@@ -245,10 +270,7 @@ app.post("/check-result", async (req, res) => {
   if (matchCount >= 2) resultText = "4 Match 🔥";
   if (matchCount >= 3) resultText = "5 Match 🏆";
 
-  res.json({
-    result: resultText,
-    number: drawNumber
-  });
+  res.json({ result: resultText, number: drawNumber });
 });
 
 // ================== LEADERBOARD ==================
@@ -269,5 +291,5 @@ app.get("/leaderboard", async (req, res) => {
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Server running on ${PORT}`);
 });
