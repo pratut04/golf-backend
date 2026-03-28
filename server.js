@@ -20,15 +20,11 @@ console.log("🚀 DB test started...");
 })();
 
 // ================== MIDDLEWARE ==================
-const corsOptions = {
+app.use(cors({
   origin: "https://golf-frontend-mu.vercel.app",
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
-};
+}));
 
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
 app.use(express.json());
 
 // ================== TEST ==================
@@ -104,7 +100,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// ================== USERS (ADMIN) ==================
+// ================== USERS ==================
 app.get("/users", async (req, res) => {
   try {
     const result = await pool.query("SELECT id,email FROM users");
@@ -115,40 +111,47 @@ app.get("/users", async (req, res) => {
   }
 });
 
-// ================== SCORES ==================
+// ================== SCORES (FIXED) ==================
 app.post("/scores", async (req, res) => {
   try {
     const { user_id, score, created_at } = req.body;
+
+    if (!user_id || !score) {
+      return res.status(400).json({ error: "Missing data" });
+    }
 
     if (score < 1 || score > 45) {
       return res.status(400).json({ error: "Score must be 1–45" });
     }
 
+    const finalDate = created_at || new Date();
+
+    // ✅ USE "date" COLUMN
     await pool.query(
-      "INSERT INTO scores (user_id, score, created_at) VALUES ($1,$2,$3)",
-      [user_id, score, created_at]
+      "INSERT INTO scores (user_id, score, date) VALUES ($1,$2,$3)",
+      [user_id, score, finalDate]
     );
 
-    // keep only last 5 scores
+    // ✅ KEEP ONLY LAST 5
     await pool.query(`
       DELETE FROM scores
       WHERE id NOT IN (
         SELECT id FROM scores
         WHERE user_id=$1
-        ORDER BY created_at DESC
+        ORDER BY date DESC
         LIMIT 5
       ) AND user_id=$1
     `, [user_id]);
 
-    res.json({ message: "Score saved" });
+    res.json({ message: "Score saved ✅" });
 
   } catch (err) {
     console.error("SCORE ERROR:", err);
-    res.status(500).json({ error: "Score error" });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ================== GET SCORES (ADMIN) ==================
+// ================== GET SCORES ==================
 app.get("/scores", async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM scores");
@@ -182,7 +185,7 @@ app.post("/select-charity", async (req, res) => {
   }
 });
 
-// ================== DASHBOARD ==================
+// ================== DASHBOARD (FIXED) ==================
 app.get("/dashboard/:id", async (req, res) => {
   const id = req.params.id;
 
@@ -196,7 +199,7 @@ app.get("/dashboard/:id", async (req, res) => {
   const scores = await pool.query(`
     SELECT * FROM scores
     WHERE user_id=$1
-    ORDER BY created_at DESC
+    ORDER BY date DESC
   `, [id]);
 
   res.json({
