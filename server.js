@@ -28,7 +28,7 @@ app.use(express.json());
 
 // ✅ TEST ROUTE
 app.get("/", (req, res) => {
-  res.send("API running");
+  res.send("Server running 🚀");
 });
 
 
