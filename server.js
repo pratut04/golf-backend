@@ -9,7 +9,7 @@ const pool = require("./db");
 const app = express();
 
 // ================== ✅ FINAL CORS FIX ==================
-const cors = require("cors");
+
 
 app.use(cors({
   origin: true,   // ✅ allow all origins dynamically
