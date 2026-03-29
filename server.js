@@ -9,10 +9,23 @@ const pool = require("./db");
 const app = express();
 
 // ================== ✅ FINAL CORS FIX ==================
-app.use(cors({
-  origin: "*"
-}));
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "https://golf-frontend-mu.vercel.app", // production
+  "https://golf-frontend-72m6wxxxw-pratut04s-projects.vercel.app" // preview
+];
 
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("CORS not allowed"));
+    }
+  },
+  credentials: true
+}));
 app.use(express.json());
 
 // ================== DB CHECK ==================
