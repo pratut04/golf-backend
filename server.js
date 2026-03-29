@@ -8,21 +8,9 @@ const pool = require("./db");
 
 const app = express();
 
-// ================== CORS FIX ==================
-const allowedOrigins = [
-  "https://golf-frontend-mu.vercel.app",
-  "http://localhost:5173"
-];
-
+// ================== ✅ FINAL CORS FIX ==================
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("CORS not allowed"));
-    }
-  },
-  credentials: true
+  origin: "*"
 }));
 
 app.use(express.json());
@@ -269,6 +257,7 @@ app.post("/draw", async (req, res) => {
     res.status(500).json({ error: "Draw failed" });
   }
 });
+
 // ================== RESULT ==================
 app.post("/check-result", async (req, res) => {
   try {
@@ -305,6 +294,7 @@ app.post("/check-result", async (req, res) => {
     res.status(500).json({ error: "Result failed" });
   }
 });
+
 // ================== LEADERBOARD ==================
 app.get("/leaderboard", async (req, res) => {
   const result = await pool.query(`
