@@ -9,21 +9,10 @@ const pool = require("./db");
 const app = express();
 
 // ================== ✅ FINAL CORS FIX ==================
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://golf-frontend-mu.vercel.app", // production
-  "https://golf-frontend-72m6wxxxw-pratut04s-projects.vercel.app" // preview
-];
+const cors = require("cors");
 
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("CORS not allowed"));
-    }
-  },
+  origin: true,   // ✅ allow all origins dynamically
   credentials: true
 }));
 app.use(express.json());
