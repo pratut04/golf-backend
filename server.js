@@ -131,7 +131,7 @@ app.post("/scores", async (req, res) => {
     const date = created_at || new Date();
 
     await pool.query(
-      "INSERT INTO scores (user_id, score, date) VALUES ($1,$2,$3)",
+      "INSERT INTO scores (user_id, score, created_at) VALUES ($1,$2,$3)",
       [user_id, score, date]
     );
 
@@ -140,7 +140,7 @@ app.post("/scores", async (req, res) => {
       WHERE id NOT IN (
         SELECT id FROM scores
         WHERE user_id=$1
-        ORDER BY date DESC
+        ORDER BY created_at DESC
         LIMIT 5
       ) AND user_id=$1
     `, [user_id]);
@@ -233,7 +233,7 @@ app.get("/dashboard/:id", async (req, res) => {
     const scores = await pool.query(`
       SELECT * FROM scores
       WHERE user_id=$1
-      ORDER BY date DESC
+      ORDER BY created_at DESC
     `, [id]);
 
     const winnings = await pool.query(`
@@ -254,47 +254,57 @@ app.get("/dashboard/:id", async (req, res) => {
 
 // ================== DRAW ==================
 app.post("/draw", async (req, res) => {
-  const number = Math.floor(Math.random() * 45) + 1;
+  try {
+    const number = Math.floor(Math.random() * 45) + 1;
 
-  const result = await pool.query(
-    "INSERT INTO draws (numbers) VALUES ($1) RETURNING *",
-    [number]
-  );
+    const result = await pool.query(
+      "INSERT INTO draws (numbers) VALUES ($1) RETURNING *",
+      [[number]]
+    );
 
-  res.json(result.rows[0]);
+    res.json(result.rows[0]);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Draw failed" });
+  }
 });
-
 // ================== RESULT ==================
 app.post("/check-result", async (req, res) => {
-  const { user_id } = req.body;
+  try {
+    const { user_id } = req.body;
 
-  const draw = await pool.query(
-    "SELECT * FROM draws ORDER BY id DESC LIMIT 1"
-  );
+    const draw = await pool.query(
+      "SELECT * FROM draws ORDER BY id DESC LIMIT 1"
+    );
 
-  if (draw.rows.length === 0) {
-    return res.json({ result: "No draw yet" });
+    if (draw.rows.length === 0) {
+      return res.json({ result: "No draw yet" });
+    }
+
+    const drawNumber = draw.rows[0].numbers[0];
+
+    const scores = await pool.query(
+      "SELECT * FROM scores WHERE user_id=$1",
+      [user_id]
+    );
+
+    const matchCount = scores.rows.filter(
+      s => s.score === drawNumber
+    ).length;
+
+    let resultText = "LOSE 😢";
+    if (matchCount >= 1) resultText = "3 Match 🎉";
+    if (matchCount >= 2) resultText = "4 Match 🔥";
+    if (matchCount >= 3) resultText = "5 Match 🏆";
+
+    res.json({ result: resultText, number: drawNumber });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Result failed" });
   }
-
-  const drawNumber = draw.rows[0].numbers;
-
-  const scores = await pool.query(
-    "SELECT * FROM scores WHERE user_id=$1",
-    [user_id]
-  );
-
-  const matchCount = scores.rows.filter(
-    s => s.score === drawNumber
-  ).length;
-
-  let resultText = "LOSE 😢";
-  if (matchCount >= 1) resultText = "3 Match 🎉";
-  if (matchCount >= 2) resultText = "4 Match 🔥";
-  if (matchCount >= 3) resultText = "5 Match 🏆";
-
-  res.json({ result: resultText, number: drawNumber });
 });
-
 // ================== LEADERBOARD ==================
 app.get("/leaderboard", async (req, res) => {
   const result = await pool.query(`
