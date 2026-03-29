@@ -8,6 +8,25 @@ const pool = require("./db");
 
 const app = express();
 
+// ================== CORS FIX ==================
+const allowedOrigins = [
+  "https://golf-frontend-mu.vercel.app",
+  "http://localhost:5173"
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("CORS not allowed"));
+    }
+  },
+  credentials: true
+}));
+
+app.use(express.json());
+
 // ================== DB CHECK ==================
 (async () => {
   try {
@@ -17,12 +36,6 @@ const app = express();
     console.error("❌ DB ERROR:", err.message);
   }
 })();
-
-// ================== MIDDLEWARE ==================
-app.use(cors({
-  origin: true
-}));
-app.use(express.json());
 
 // ================== TEST ==================
 app.get("/", (req, res) => {
@@ -53,6 +66,7 @@ app.post("/users", async (req, res) => {
     res.json(result.rows[0]);
 
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Register failed" });
   }
 });
@@ -89,7 +103,8 @@ app.post("/login", async (req, res) => {
       user: { id: user.id, email: user.email }
     });
 
-  } catch {
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Login failed" });
   }
 });
@@ -120,7 +135,6 @@ app.post("/scores", async (req, res) => {
       [user_id, score, date]
     );
 
-    // keep last 5
     await pool.query(`
       DELETE FROM scores
       WHERE id NOT IN (
@@ -134,6 +148,7 @@ app.post("/scores", async (req, res) => {
     res.json({ message: "Score saved" });
 
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -150,7 +165,7 @@ app.get("/charities", async (req, res) => {
   res.json(result.rows);
 });
 
-// ✅ ADMIN ADD CHARITY
+// ================== ADD CHARITY ==================
 app.post("/charities", async (req, res) => {
   try {
     const { name, description, image } = req.body;
@@ -163,6 +178,7 @@ app.post("/charities", async (req, res) => {
     res.json({ message: "Charity added" });
 
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Add charity failed" });
   }
 });
@@ -179,7 +195,7 @@ app.post("/select-charity", async (req, res) => {
   res.json({ message: "Selected" });
 });
 
-// ================== SUBSCRIPTION ==================
+// ================== SUBSCRIBE ==================
 app.post("/subscribe", async (req, res) => {
   try {
     const { user_id, type } = req.body;
@@ -196,37 +212,44 @@ app.post("/subscribe", async (req, res) => {
 
     res.json({ message: "Subscribed" });
 
-  } catch {
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Subscription failed" });
   }
 });
 
 // ================== DASHBOARD ==================
 app.get("/dashboard/:id", async (req, res) => {
-  const id = req.params.id;
+  try {
+    const id = req.params.id;
 
-  const user = await pool.query(`
-    SELECT u.*, c.name AS charity_name
-    FROM users u
-    LEFT JOIN charities c ON u.charity_id = c.id
-    WHERE u.id=$1
-  `, [id]);
+    const user = await pool.query(`
+      SELECT u.*, c.name AS charity_name
+      FROM users u
+      LEFT JOIN charities c ON u.charity_id = c.id
+      WHERE u.id=$1
+    `, [id]);
 
-  const scores = await pool.query(`
-    SELECT * FROM scores
-    WHERE user_id=$1
-    ORDER BY date DESC
-  `, [id]);
+    const scores = await pool.query(`
+      SELECT * FROM scores
+      WHERE user_id=$1
+      ORDER BY date DESC
+    `, [id]);
 
-  const winnings = await pool.query(`
-    SELECT * FROM winnings WHERE user_id=$1
-  `, [id]);
+    const winnings = await pool.query(`
+      SELECT * FROM winnings WHERE user_id=$1
+    `, [id]);
 
-  res.json({
-    user: user.rows[0],
-    scores: scores.rows,
-    winnings: winnings.rows
-  });
+    res.json({
+      user: user.rows[0],
+      scores: scores.rows,
+      winnings: winnings.rows
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Dashboard error" });
+  }
 });
 
 // ================== DRAW ==================
@@ -287,7 +310,7 @@ app.get("/leaderboard", async (req, res) => {
 });
 
 // ================== SERVER ==================
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on ${PORT}`);
