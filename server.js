@@ -130,7 +130,7 @@ app.post("/scores", async (req, res) => {
       WHERE id NOT IN (
         SELECT id FROM scores
         WHERE user_id=$1
-        ORDER BY id DESC
+        ORDER BY created_at DESC
         LIMIT 5
       ) AND user_id=$1
     `, [user_id]);
@@ -223,7 +223,7 @@ app.get("/dashboard/:id", async (req, res) => {
     const scores = await pool.query(`
       SELECT * FROM scores
       WHERE user_id=$1
-      ORDER BY id DESC
+      ORDER BY created_at DESC
       LIMIT 5
     `, [id]);
 
@@ -305,7 +305,7 @@ app.post("/draw", async (req, res) => {
 
       // 👉 3. GET USER SCORES
       const scores = await pool.query(
-        "SELECT * FROM scores WHERE user_id=$1 ORDER BY created_at DESC",
+        "SELECT * FROM scores WHERE user_id=$1",
         [user_id]
       );
 
