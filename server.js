@@ -8,7 +8,7 @@ const pool = require("./db");
 
 const app = express();
 
-// ================== ✅ FINAL CORS FIX ==================
+// ================== ✅ FINAL CORS FIX ==================  
 
 
 app.use(cors({
@@ -108,7 +108,7 @@ app.get("/users", async (req, res) => {
 // ================== SCORES ==================
 app.post("/scores", async (req, res) => {
   try {
-    const { user_id, score, created_at } = req.body;
+    const { user_id, score } = req.body;
 
     if (!user_id || !score) {
       return res.status(400).json({ error: "Missing data" });
@@ -118,7 +118,7 @@ app.post("/scores", async (req, res) => {
       return res.status(400).json({ error: "Score 1–45 only" });
     }
 
-    const date = created_at || new Date();
+    const date = new Date();
 
     await pool.query(
       "INSERT INTO scores (user_id, score, created_at) VALUES ($1,$2,$3)",
@@ -130,7 +130,7 @@ app.post("/scores", async (req, res) => {
       WHERE id NOT IN (
         SELECT id FROM scores
         WHERE user_id=$1
-        ORDER BY created_at DESC
+        ORDER BY id DESC
         LIMIT 5
       ) AND user_id=$1
     `, [user_id]);
@@ -223,7 +223,8 @@ app.get("/dashboard/:id", async (req, res) => {
     const scores = await pool.query(`
       SELECT * FROM scores
       WHERE user_id=$1
-      ORDER BY created_at DESC
+      ORDER BY id DESC
+      LIMIT 5
     `, [id]);
 
     const winnings = await pool.query(`
@@ -245,14 +246,26 @@ app.get("/dashboard/:id", async (req, res) => {
 // ================== DRAW ==================
 app.post("/draw", async (req, res) => {
   try {
-    const number = Math.floor(Math.random() * 45) + 1;
+    const numbers = [];
 
-    const result = await pool.query(
+    while (numbers.length < 5) {
+      const n = Math.floor(Math.random() * 45) + 1;
+      if (!numbers.includes(n)) {
+        numbers.push(n);
+      }
+    }
+
+    console.log("DRAW NUMBERS:", numbers);
+
+    await pool.query(
       "INSERT INTO draws (numbers) VALUES ($1) RETURNING *",
-      [[number]]
+      [numbers]
     );
 
-    res.json(result.rows[0]);
+    res.json({
+      message: "Draw completed",
+      numbers
+    });
 
   } catch (err) {
     console.error(err);
@@ -261,41 +274,65 @@ app.post("/draw", async (req, res) => {
 });
 
 // ================== RESULT ==================
-app.post("/check-result", async (req, res) => {
-  try {
-    const { user_id } = req.body;
+  app.post("/check-result", async (req, res) => {
+    try {
+      const { user_id } = req.body;
 
-    const draw = await pool.query(
-      "SELECT * FROM draws ORDER BY id DESC LIMIT 1"
-    );
+      // 👉 1. GET LATEST DRAW
+      const draw = await pool.query(
+        "SELECT * FROM draws ORDER BY created_at DESC LIMIT 1"
+      );
 
-    if (draw.rows.length === 0) {
-      return res.json({ result: "No draw yet" });
+      if (draw.rows.length === 0) {
+        return res.json({ result: "No draw yet" });
+      }
+
+      const drawNumber = draw.rows[0].numbers;
+      const drawId = draw.rows[0].id; // ✅ IMPORTANT
+
+      // 👉 2. CHECK IF ALREADY CHECKED
+      const existing = await pool.query(
+        "SELECT * FROM winnings WHERE user_id = $1 AND draw_id = $2",
+        [user_id, drawId]
+      );
+
+      if (existing.rows.length > 0) {
+        return res.json({
+          result: "Already checked ⚠️",
+          numbers: drawNumber
+        });
+      }
+
+      // 👉 3. GET USER SCORES
+      const scores = await pool.query(
+        "SELECT * FROM scores WHERE user_id=$1",
+        [user_id]
+      );
+
+      const matchCount = scores.rows.filter(
+        s => drawNumber.includes(s.score)
+      ).length;
+
+      let resultText = "LOSE 😢";
+      if (matchCount >= 1) resultText = "3 Match 🎉";
+      if (matchCount >= 2) resultText = "4 Match 🔥";
+      if (matchCount >= 3) resultText = "5 Match 🏆";
+
+      // 👉 4. INSERT ONLY ONCE
+      if (matchCount >= 1) {
+        await pool.query(
+          "INSERT INTO winnings (user_id, amount, draw_id) VALUES ($1, $2, $3)",
+          [user_id, matchCount * 100, drawId]
+        );
+      }
+
+      res.json({ result: resultText, numbers: drawNumber });
+
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Result failed" });
     }
-
-    const drawNumber = draw.rows[0].numbers[0];
-
-    const scores = await pool.query(
-      "SELECT * FROM scores WHERE user_id=$1",
-      [user_id]
-    );
-
-    const matchCount = scores.rows.filter(
-      s => s.score === drawNumber
-    ).length;
-
-    let resultText = "LOSE 😢";
-    if (matchCount >= 1) resultText = "3 Match 🎉";
-    if (matchCount >= 2) resultText = "4 Match 🔥";
-    if (matchCount >= 3) resultText = "5 Match 🏆";
-
-    res.json({ result: resultText, number: drawNumber });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Result failed" });
-  }
-});
+  });
 
 // ================== LEADERBOARD ==================
 app.get("/leaderboard", async (req, res) => {
@@ -311,9 +348,43 @@ app.get("/leaderboard", async (req, res) => {
   res.json(result.rows);
 });
 
+
+app.post("/approve-winning", async (req, res) => {
+  try {
+    const { winning_id } = req.body;
+
+    await pool.query(
+      "UPDATE winnings SET status = 'paid' WHERE id = $1 AND status = 'pending'",
+      [winning_id]
+    );
+
+    res.json({ message: "Approved ✅" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed" });
+  }
+});
+
+
+app.get("/all-winnings", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT w.id, u.email, w.amount, w.status
+      FROM winnings w
+      JOIN users u ON u.id = w.user_id
+      ORDER BY w.created_at DESC
+    `);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Fetch failed" });
+  }
+});
 // ================== SERVER ==================
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on ${PORT}`);
 });
+
