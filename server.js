@@ -5,14 +5,14 @@ const cors = require("cors");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const pool = require("./db");
+const crypto = require("crypto");
+const Razorpay = require("razorpay");
 
 const app = express();
 
-// ================== ✅ FINAL CORS FIX ==================  
-
-
+// ================== ✅ CORS ==================
 app.use(cors({
-  origin: true,   // ✅ allow all origins dynamically
+  origin: true,
   credentials: true
 }));
 app.use(express.json());
@@ -31,6 +31,76 @@ app.use(express.json());
 app.get("/", (req, res) => {
   res.send("Server running 🚀");
 });
+
+// ================== ✅ CHARITIES (FIX ADDED) ==================
+app.get("/charities", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM charities");
+    res.json(result.rows);
+  } catch (err) {
+    console.error("CHARITIES ERROR:", err);
+    res.status(500).json({ error: "Failed to fetch charities" });
+  }
+});
+// ================== ADD CHARITY ==================
+app.post("/charities", async (req, res) => {
+  try {
+    const { name, description, image } = req.body;
+
+    await pool.query(
+      "INSERT INTO charities (name, description, image) VALUES ($1,$2,$3)",
+      [name, description, image]
+    );
+
+    res.json({ message: "Charity added" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Add charity failed" });
+  }
+});
+// ================== SELECT CHARITY ==================
+app.post("/select-charity", async (req, res) => {
+  const { user_id, charity_id } = req.body;
+
+  await pool.query(
+    "UPDATE users SET charity_id=$1 WHERE id=$2",
+    [charity_id, user_id]
+  );
+
+  res.json({ message: "Selected" });
+});
+// ================== DRAW ==================
+app.post("/draw", async (req, res) => {
+  try {
+    const numbers = [];
+
+    while (numbers.length < 5) {
+      const n = Math.floor(Math.random() * 45) + 1;
+      if (!numbers.includes(n)) {
+        numbers.push(n);
+      }
+    }
+
+    console.log("DRAW NUMBERS:", numbers);
+
+    await pool.query(
+      "INSERT INTO draws (numbers) VALUES ($1) RETURNING *",
+      [numbers]
+    );
+
+    res.json({
+      message: "Draw completed",
+      numbers
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Draw failed" });
+  }
+});
+
+
 
 // ================== REGISTER ==================
 app.post("/users", async (req, res) => {
@@ -61,6 +131,98 @@ app.post("/users", async (req, res) => {
   }
 });
 
+// ================== RESULT ==================
+app.post("/check-result", async (req, res) => {
+  try {
+    const { user_id } = req.body;
+
+    // 👉 1. GET LATEST DRAW
+    const draw = await pool.query(
+      "SELECT * FROM draws ORDER BY created_at DESC LIMIT 1"
+    );
+
+    if (draw.rows.length === 0) {
+      return res.json({ result: "No draw yet" });
+    }
+
+    const drawNumber = draw.rows[0].numbers;
+    const drawId = draw.rows[0].id; // ✅ IMPORTANT
+
+    // 👉 2. CHECK IF ALREADY CHECKED
+    const existing = await pool.query(
+      "SELECT * FROM winnings WHERE user_id = $1 AND draw_id = $2",
+      [user_id, drawId]
+    );
+
+    if (existing.rows.length > 0) {
+      return res.json({
+        result: "Already checked ⚠️",
+        numbers: drawNumber
+      });
+    }
+
+    // 👉 3. GET USER SCORES
+    const scores = await pool.query(
+      "SELECT * FROM scores WHERE user_id=$1",
+      [user_id]
+    );
+
+    const matchCount = scores.rows.filter(
+      s => drawNumber.includes(s.score)
+    ).length;
+
+    let resultText = "LOSE 😢";
+    if (matchCount >= 1) resultText = "3 Match 🎉";
+    if (matchCount >= 2) resultText = "4 Match 🔥";
+    if (matchCount >= 3) resultText = "5 Match 🏆";
+
+    // 👉 4. INSERT ONLY ONCE
+    if (matchCount >= 1) {
+      await pool.query(
+        "INSERT INTO winnings (user_id, amount, draw_id) VALUES ($1, $2, $3)",
+        [user_id, matchCount * 100, drawId]
+      );
+    }
+
+    res.json({ result: resultText, numbers: drawNumber });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Result failed" });
+  }
+});
+app.post("/approve-winning", async (req, res) => {
+  try {
+    const { winning_id } = req.body;
+
+    await pool.query(
+      "UPDATE winnings SET status = 'paid' WHERE id = $1 AND status = 'pending'",
+      [winning_id]
+    );
+
+    res.json({ message: "Approved ✅" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed" });
+  }
+});
+
+
+app.get("/all-winnings", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT w.id, u.email, w.amount, w.status
+      FROM winnings w
+      JOIN users u ON u.id = w.user_id
+      ORDER BY w.created_at DESC
+    `);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Fetch failed" });
+  }
+});
 // ================== LOGIN ==================
 app.post("/login", async (req, res) => {
   try {
@@ -145,66 +307,18 @@ app.post("/scores", async (req, res) => {
 
 // ================== GET SCORES ==================
 app.get("/scores", async (req, res) => {
-  const result = await pool.query("SELECT * FROM scores");
-  res.json(result.rows);
-});
-
-// ================== CHARITIES ==================
-app.get("/charities", async (req, res) => {
-  const result = await pool.query("SELECT * FROM charities");
-  res.json(result.rows);
-});
-
-// ================== ADD CHARITY ==================
-app.post("/charities", async (req, res) => {
   try {
-    const { name, description, image } = req.body;
+    const result = await pool.query(`
+      SELECT scores.*, users.email
+      FROM scores
+      JOIN users ON users.id = scores.user_id
+      ORDER BY scores.created_at DESC
+    `);
 
-    await pool.query(
-      "INSERT INTO charities (name, description, image) VALUES ($1,$2,$3)",
-      [name, description, image]
-    );
-
-    res.json({ message: "Charity added" });
-
+    res.json(result.rows);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Add charity failed" });
-  }
-});
-
-// ================== SELECT CHARITY ==================
-app.post("/select-charity", async (req, res) => {
-  const { user_id, charity_id } = req.body;
-
-  await pool.query(
-    "UPDATE users SET charity_id=$1 WHERE id=$2",
-    [charity_id, user_id]
-  );
-
-  res.json({ message: "Selected" });
-});
-
-// ================== SUBSCRIBE ==================
-app.post("/subscribe", async (req, res) => {
-  try {
-    const { user_id, type } = req.body;
-
-    let days = type === "yearly" ? 365 : 30;
-
-    await pool.query(`
-      UPDATE users 
-      SET subscription_status='active',
-          subscription_type=$1,
-          subscription_end = NOW() + INTERVAL '${days} days'
-      WHERE id=$2
-    `, [type, user_id]);
-
-    res.json({ message: "Subscribed" });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Subscription failed" });
+    res.status(500).json({ error: "Error fetching scores" });
   }
 });
 
@@ -213,12 +327,18 @@ app.get("/dashboard/:id", async (req, res) => {
   try {
     const id = req.params.id;
 
+    console.log("Dashboard API called:", id);
+
     const user = await pool.query(`
       SELECT u.*, c.name AS charity_name
       FROM users u
       LEFT JOIN charities c ON u.charity_id = c.id
       WHERE u.id=$1
     `, [id]);
+
+    if (user.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
     const scores = await pool.query(`
       SELECT * FROM scores
@@ -238,102 +358,56 @@ app.get("/dashboard/:id", async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("DASHBOARD ERROR:", err);
     res.status(500).json({ error: "Dashboard error" });
   }
 });
 
-// ================== DRAW ==================
-app.post("/draw", async (req, res) => {
+//==================PAYMENT STATUS=================
+
+app.post("/activate-subscription", async (req, res) => {
   try {
-    const numbers = [];
-
-    while (numbers.length < 5) {
-      const n = Math.floor(Math.random() * 45) + 1;
-      if (!numbers.includes(n)) {
-        numbers.push(n);
-      }
-    }
-
-    console.log("DRAW NUMBERS:", numbers);
+    const { user_id } = req.body;
 
     await pool.query(
-      "INSERT INTO draws (numbers) VALUES ($1) RETURNING *",
-      [numbers]
+      `UPDATE users 
+       SET subscription_status = 'active',
+           subscription_end = NOW() + INTERVAL '30 days'
+       WHERE id = $1`,
+      [user_id]
     );
 
-    res.json({
-      message: "Draw completed",
-      numbers
-    });
-
+    res.json({ message: "Subscription activated ✅" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Draw failed" });
+    res.status(500).json({ error: "Activation failed" });
   }
 });
 
-// ================== RESULT ==================
-  app.post("/check-result", async (req, res) => {
-    try {
-      const { user_id } = req.body;
 
-      // 👉 1. GET LATEST DRAW
-      const draw = await pool.query(
-        "SELECT * FROM draws ORDER BY created_at DESC LIMIT 1"
-      );
+app.post("/check-subscription", async (req, res) => {
+  try {
+    const { user_id } = req.body;
 
-      if (draw.rows.length === 0) {
-        return res.json({ result: "No draw yet" });
-      }
+    const user = await pool.query(
+      "SELECT subscription_end FROM users WHERE id = $1",
+      [user_id]
+    );
 
-      const drawNumber = draw.rows[0].numbers;
-      const drawId = draw.rows[0].id; // ✅ IMPORTANT
+    const end = user.rows[0].subscription_end;
 
-      // 👉 2. CHECK IF ALREADY CHECKED
-      const existing = await pool.query(
-        "SELECT * FROM winnings WHERE user_id = $1 AND draw_id = $2",
-        [user_id, drawId]
-      );
-
-      if (existing.rows.length > 0) {
-        return res.json({
-          result: "Already checked ⚠️",
-          numbers: drawNumber
-        });
-      }
-
-      // 👉 3. GET USER SCORES
-      const scores = await pool.query(
-        "SELECT * FROM scores WHERE user_id=$1",
+    if (end && new Date(end) < new Date()) {
+      await pool.query(
+        "UPDATE users SET subscription_status = 'inactive' WHERE id = $1",
         [user_id]
       );
-
-      const matchCount = scores.rows.filter(
-        s => drawNumber.includes(s.score)
-      ).length;
-
-      let resultText = "LOSE 😢";
-      if (matchCount >= 1) resultText = "3 Match 🎉";
-      if (matchCount >= 2) resultText = "4 Match 🔥";
-      if (matchCount >= 3) resultText = "5 Match 🏆";
-
-      // 👉 4. INSERT ONLY ONCE
-      if (matchCount >= 1) {
-        await pool.query(
-          "INSERT INTO winnings (user_id, amount, draw_id) VALUES ($1, $2, $3)",
-          [user_id, matchCount * 100, drawId]
-        );
-      }
-
-      res.json({ result: resultText, numbers: drawNumber });
-
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Result failed" });
     }
-  });
 
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+  }
+});
 // ================== LEADERBOARD ==================
 app.get("/leaderboard", async (req, res) => {
   const result = await pool.query(`
@@ -348,43 +422,9 @@ app.get("/leaderboard", async (req, res) => {
   res.json(result.rows);
 });
 
-
-app.post("/approve-winning", async (req, res) => {
-  try {
-    const { winning_id } = req.body;
-
-    await pool.query(
-      "UPDATE winnings SET status = 'paid' WHERE id = $1 AND status = 'pending'",
-      [winning_id]
-    );
-
-    res.json({ message: "Approved ✅" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed" });
-  }
-});
-
-
-app.get("/all-winnings", async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT w.id, u.email, w.amount, w.status
-      FROM winnings w
-      JOIN users u ON u.id = w.user_id
-      ORDER BY w.created_at DESC
-    `);
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Fetch failed" });
-  }
-});
 // ================== SERVER ==================
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 5000; // ✅ FIX (match your running port)
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on ${PORT}`);
 });
-
