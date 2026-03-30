@@ -305,7 +305,7 @@ app.post("/draw", async (req, res) => {
 
       // 👉 3. GET USER SCORES
       const scores = await pool.query(
-        "SELECT * FROM scores WHERE user_id=$1",
+        "SELECT * FROM scores WHERE user_id=$1 ORDER BY created_at DESC",
         [user_id]
       );
 
