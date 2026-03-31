@@ -10,7 +10,7 @@ const Razorpay = require("razorpay");
 
 const app = express();
 
-// ================== ✅ CORS ==================
+// ================== CORS ==================
 app.use(cors({
   origin: true,
   credentials: true
@@ -32,7 +32,7 @@ app.get("/", (req, res) => {
   res.send("Server running 🚀");
 });
 
-// ================== ✅ CHARITIES (FIX ADDED) ==================
+// ==================  CHARITIES (FIX ADDED) ==================
 app.get("/charities", async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM charities");
@@ -136,7 +136,7 @@ app.post("/check-result", async (req, res) => {
   try {
     const { user_id } = req.body;
 
-    // 👉 1. GET LATEST DRAW
+    //  1. GET LATEST DRAW
     const draw = await pool.query(
       "SELECT * FROM draws ORDER BY created_at DESC LIMIT 1"
     );
@@ -146,9 +146,9 @@ app.post("/check-result", async (req, res) => {
     }
 
     const drawNumber = draw.rows[0].numbers;
-    const drawId = draw.rows[0].id; // ✅ IMPORTANT
+    const drawId = draw.rows[0].id; // IMPORTANT
 
-    // 👉 2. CHECK IF ALREADY CHECKED
+    //  2. CHECK IF ALREADY CHECKED
     const existing = await pool.query(
       "SELECT * FROM winnings WHERE user_id = $1 AND draw_id = $2",
       [user_id, drawId]
@@ -161,7 +161,7 @@ app.post("/check-result", async (req, res) => {
       });
     }
 
-    // 👉 3. GET USER SCORES
+    //  3. GET USER SCORES
     const scores = await pool.query(
       "SELECT * FROM scores WHERE user_id=$1",
       [user_id]
@@ -176,7 +176,7 @@ app.post("/check-result", async (req, res) => {
     if (matchCount >= 2) resultText = "4 Match 🔥";
     if (matchCount >= 3) resultText = "5 Match 🏆";
 
-    // 👉 4. INSERT ONLY ONCE
+    //  4. INSERT ONLY ONCE
     if (matchCount >= 1) {
       await pool.query(
         "INSERT INTO winnings (user_id, amount, draw_id) VALUES ($1, $2, $3)",
@@ -389,23 +389,39 @@ app.post("/check-subscription", async (req, res) => {
   try {
     const { user_id } = req.body;
 
-    const user = await pool.query(
+    const result = await pool.query(
       "SELECT subscription_end FROM users WHERE id = $1",
       [user_id]
     );
 
-    const end = user.rows[0].subscription_end;
+    // SAFETY CHECK
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
-    if (end && new Date(end) < new Date()) {
+    const end = result.rows[0].subscription_end;
+
+    let status = "active"; 
+
+    // CHECK EXPIRY
+    if (!end || new Date(end) < new Date()) {
       await pool.query(
         "UPDATE users SET subscription_status = 'inactive' WHERE id = $1",
         [user_id]
       );
+
+      status = "inactive"; 
     }
 
-    res.json({ success: true });
+    // RETURN STATUS
+    res.json({
+      success: true,
+      status: status
+    });
+
   } catch (err) {
-    console.error(err);
+    console.error("CHECK SUB ERROR:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 // ================== LEADERBOARD ==================
@@ -423,7 +439,7 @@ app.get("/leaderboard", async (req, res) => {
 });
 
 // ================== SERVER ==================
-const PORT = process.env.PORT || 5000; // ✅ FIX (match your running port)
+const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on ${PORT}`);
