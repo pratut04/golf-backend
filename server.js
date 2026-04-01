@@ -27,6 +27,26 @@ app.use(express.json());
   }
 })();
 
+
+// ================== AUTO EXPIRE (REAL AUTO) ==================
+setInterval(async () => {
+  try {
+    console.log("⏰ Running auto-expiry check...");
+
+    await pool.query(`
+      UPDATE users
+      SET subscription_status = 'inactive'
+      WHERE subscription_status = 'active'
+      AND subscription_end IS NOT NULL
+      AND subscription_end < NOW()
+    `);
+
+    console.log("✅ Expiry updated");
+  } catch (err) {
+    console.error("❌ Expiry error:", err);
+  }
+}, 60 * 1000); // every 1 minute
+
 // ================== TEST ==================
 app.get("/", (req, res) => {
   res.send("Server running 🚀");
@@ -131,12 +151,11 @@ app.post("/users", async (req, res) => {
   }
 });
 
-// ================== RESULT ==================
 app.post("/check-result", async (req, res) => {
   try {
     const { user_id } = req.body;
 
-    //  1. GET LATEST DRAW
+    // 1️⃣ GET LATEST DRAW
     const draw = await pool.query(
       "SELECT * FROM draws ORDER BY created_at DESC LIMIT 1"
     );
@@ -146,51 +165,54 @@ app.post("/check-result", async (req, res) => {
     }
 
     const drawNumber = draw.rows[0].numbers;
-    const drawId = draw.rows[0].id; // IMPORTANT
+    const drawId = draw.rows[0].id;
 
-    //  2. CHECK IF ALREADY CHECKED
-    const existing = await pool.query(
-      "SELECT * FROM winnings WHERE user_id = $1 AND draw_id = $2",
-      [user_id, drawId]
-    );
-
-    if (existing.rows.length > 0) {
-      return res.json({
-        result: "Already checked ⚠️",
-        numbers: drawNumber
-      });
-    }
-
-    //  3. GET USER SCORES
+    // 2️⃣ GET USER LAST 5 SCORES
     const scores = await pool.query(
-      "SELECT * FROM scores WHERE user_id=$1",
+      "SELECT score FROM scores WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5",
       [user_id]
     );
 
-    const matchCount = scores.rows.filter(
-      s => drawNumber.includes(s.score)
+    // 3️⃣ MATCH COUNT
+    const matchCount = scores.rows.filter(s =>
+      drawNumber.includes(Number(s.score))
     ).length;
 
+    // 4️⃣ RESULT LOGIC
     let resultText = "LOSE 😢";
-    if (matchCount >= 1) resultText = "3 Match 🎉";
-    if (matchCount >= 2) resultText = "4 Match 🔥";
-    if (matchCount >= 3) resultText = "5 Match 🏆";
 
-    //  4. INSERT ONLY ONCE
-    if (matchCount >= 1) {
+    if (matchCount === 3) resultText = "3 Match 🎉";
+    else if (matchCount === 4) resultText = "4 Match 🔥";
+    else if (matchCount >= 5) resultText = "5 Match 🏆";
+
+    // 5️⃣ CHECK IF WINNING ALREADY INSERTED
+    const existing = await pool.query(
+      "SELECT * FROM winnings WHERE user_id=$1 AND draw_id=$2",
+      [user_id, drawId]
+    );
+
+    // 6️⃣ INSERT ONLY ONCE
+    if (existing.rows.length === 0 && matchCount >= 1) {
       await pool.query(
-        "INSERT INTO winnings (user_id, amount, draw_id) VALUES ($1, $2, $3)",
-        [user_id, matchCount * 100, drawId]
+        "INSERT INTO winnings (user_id, amount, draw_id, match_type) VALUES ($1,$2,$3,$4)",
+        [user_id, matchCount * 100, drawId, resultText]
       );
     }
 
-    res.json({ result: resultText, numbers: drawNumber });
+    // 7️⃣ ALWAYS RETURN RESULT ✅
+    res.json({
+      result: resultText,
+      numbers: drawNumber,
+      matches: matchCount
+    });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Result failed" });
+    console.error("CHECK RESULT ERROR:", err);
+    res.status(500).json({ error: "Result failed ❌" });
   }
 });
+
+
 app.post("/approve-winning", async (req, res) => {
   try {
     const { winning_id } = req.body;
@@ -365,19 +387,47 @@ app.get("/dashboard/:id", async (req, res) => {
 
 //==================PAYMENT STATUS=================
 
+// app.post("/activate-subscription", async (req, res) => {
+//   try {
+//     const { user_id } = req.body;
+
+//     await pool.query(
+//       `UPDATE users 
+//        SET subscription_status = 'active',
+//            subscription_end = NOW() + INTERVAL '30 days'
+//        WHERE id = $1`,
+//       [user_id]
+//     );
+
+//     res.json({ message: "Subscription activated ✅" });
+
+//   } catch (err) {
+//     console.error(err);
+//     res.status(500).json({ error: "Activation failed" });
+//   }
+// });
+
+
 app.post("/activate-subscription", async (req, res) => {
   try {
     const { user_id } = req.body;
 
-    await pool.query(
+    const result = await pool.query(
       `UPDATE users 
        SET subscription_status = 'active',
            subscription_end = NOW() + INTERVAL '30 days'
-       WHERE id = $1`,
+       WHERE id = $1
+       RETURNING subscription_status, subscription_end`,
       [user_id]
     );
 
-    res.json({ message: "Subscription activated ✅" });
+    console.log("ACTIVATED:", result.rows[0]);
+
+    res.json({
+      message: "Subscription activated ✅",
+      data: result.rows[0]
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Activation failed" });
@@ -389,41 +439,77 @@ app.post("/check-subscription", async (req, res) => {
   try {
     const { user_id } = req.body;
 
-    const result = await pool.query(
-      "SELECT subscription_end FROM users WHERE id = $1",
-      [user_id]
-    );
+    const result = await pool.query(`
+      SELECT 
+        subscription_status,
+        subscription_end,
+        CASE 
+          WHEN subscription_end IS NULL OR subscription_end < NOW()
+          THEN 'inactive'
+          ELSE 'active'
+        END AS real_status
+      FROM users
+      WHERE id = $1
+    `, [user_id]);
 
-    // SAFETY CHECK
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const end = result.rows[0].subscription_end;
+    const user = result.rows[0];
 
-    let status = "active"; 
-
-    // CHECK EXPIRY
-    if (!end || new Date(end) < new Date()) {
-      await pool.query(
-        "UPDATE users SET subscription_status = 'inactive' WHERE id = $1",
-        [user_id]
-      );
-
-      status = "inactive"; 
-    }
-
-    // RETURN STATUS
     res.json({
       success: true,
-      status: status
+      status: user.real_status,
+      subscription_end: user.subscription_end
     });
 
   } catch (err) {
-    console.error("CHECK SUB ERROR:", err);
+    console.error(err);
     res.status(500).json({ error: "Server error" });
   }
 });
+
+// app.post("/check-subscription", async (req, res) => {
+//   try {
+//     const { user_id } = req.body;
+
+//     const result = await pool.query(
+//       "SELECT subscription_status, subscription_end FROM users WHERE id=$1",
+//       [user_id]
+//     );
+
+//     if (result.rows.length === 0) {
+//       return res.status(404).json({ error: "User not found" });
+//     }
+
+//     const user = result.rows[0];
+
+//     let status = user.subscription_status;
+
+//     // ✅ ONLY EXPIRE (DON’T FORCE ACTIVE)
+//     if (!user.subscription_end || new Date(user.subscription_end) < new Date()) {
+//       status = "inactive";
+
+//       await pool.query(
+//         "UPDATE users SET subscription_status='inactive' WHERE id=$1",
+//         [user_id]
+//       );
+//     }
+
+//     // ❌ DO NOT FORCE ACTIVE HERE
+
+//     res.json({
+//       success: true,
+//       status,
+//       subscription_end: user.subscription_end
+//     });
+
+//   } catch (err) {
+//     console.error("CHECK SUB ERROR:", err);
+//     res.status(500).json({ error: "Server error" });
+//   }
+// }); 
 // ================== LEADERBOARD ==================
 app.get("/leaderboard", async (req, res) => {
   const result = await pool.query(`
