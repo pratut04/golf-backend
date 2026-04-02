@@ -27,7 +27,7 @@ setInterval(async () => {
     console.log("⏳ DB sleeping...");
   }
 }, 10000);
- 
+        
 
 // ================== AUTO EXPIRE (REAL AUTO) ==================
 setInterval(async () => {
@@ -192,7 +192,7 @@ app.post("/check-result", async (req, res) => {
     );
 
     // 6️⃣ INSERT ONLY ONCE
-    if (existing.rows.length === 0 && matchCount >= 1) {
+    if (existing.rows.length === 0 && matchCount >= 3) {
       await pool.query(
         "INSERT INTO winnings (user_id, amount, draw_id, match_type) VALUES ($1,$2,$3,$4)",
         [user_id, matchCount * 100, drawId, resultText]
