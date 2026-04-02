@@ -45,7 +45,7 @@ setInterval(async () => {
   } catch (err) {
     console.error("❌ Expiry error:", err);
   }
-}, 60 * 1000); // every 1 minute
+}, 60 * 60 * 1000); 
 
 // ================== TEST ==================
 app.get("/", (req, res) => {
