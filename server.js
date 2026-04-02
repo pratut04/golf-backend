@@ -18,30 +18,16 @@ app.use(cors({
 app.use(express.json());
 
 // ================== DB CHECK ==================
-const waitForDB = async () => {
-  let connected = false;
-
-  while (!connected) {
-    try {
-      const res = await pool.query("SELECT NOW()");
-      console.log("✅ DB CONNECTED:", res.rows[0].now);
-      connected = true;
-    } catch (err) {
-      console.log("⏳ Waiting for DB...");
-      await new Promise(res => setTimeout(res, 5000));
-    }
+// ✅ DB CHECK (simple, safe)
+setInterval(async () => {
+  try {
+    await pool.query("SELECT 1");
+    console.log("✅ DB working");
+  } catch (err) {
+    console.log("⏳ DB sleeping...");
   }
-};
-
-// WAIT BEFORE STARTING SERVER
-(async () => {
-  await waitForDB();
-
-  app.listen(process.env.PORT || 5000, () => {
-    console.log("🚀 Server running");
-  });
-})();
-
+}, 10000);
+ 
 
 // ================== AUTO EXPIRE (REAL AUTO) ==================
 setInterval(async () => {
