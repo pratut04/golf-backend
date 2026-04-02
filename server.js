@@ -154,7 +154,6 @@ app.post("/users", async (req, res) => {
 app.post("/check-result", async (req, res) => {
   try {
     const { user_id } = req.body;
-
     // 1️⃣ GET LATEST DRAW
     const draw = await pool.query(
       "SELECT * FROM draws ORDER BY created_at DESC LIMIT 1"
@@ -387,26 +386,66 @@ app.get("/dashboard/:id", async (req, res) => {
 
 //==================PAYMENT STATUS=================
 
-// app.post("/activate-subscription", async (req, res) => {
-//   try {
-//     const { user_id } = req.body;
+app.post("/verify-payment", async (req, res) => {
+  try {
+    const {
+      razorpay_payment_id,
+      razorpay_order_id,
+      razorpay_signature,
+      user_id,
+      type
+    } = req.body;
 
-//     await pool.query(
-//       `UPDATE users 
-//        SET subscription_status = 'active',
-//            subscription_end = NOW() + INTERVAL '30 days'
-//        WHERE id = $1`,
-//       [user_id]
-//     );
+    // 🚨 MUST HAVE THESE
+    if (!razorpay_payment_id || !user_id || !type) {
+      return res.status(400).json({ error: "Missing payment data ❌" });
+    }
 
-//     res.json({ message: "Subscription activated ✅" });
+    // 🔒 SIGNATURE VERIFY (if available)
+    if (razorpay_order_id && razorpay_signature) {
+      const generatedSignature = crypto
+        .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+        .update(razorpay_order_id + "|" + razorpay_payment_id)
+        .digest("hex");
 
-//   } catch (err) {
-//     console.error(err);
-//     res.status(500).json({ error: "Activation failed" });
-//   }
-// });
+      if (generatedSignature !== razorpay_signature) {
+        return res.status(400).json({ error: "Invalid signature ❌" });
+      }
+    }
 
+    // 📅 PLAN LOGIC
+    let interval = "30 days";
+    if (type === "yearly") {
+      interval = "365 days";
+    }
+
+    // ✅ ACTIVATE + SAVE TYPE
+    const result = await pool.query(
+      `UPDATE users 
+       SET subscription_status = 'active',
+           subscription_type = $2,
+           subscription_end = NOW() + INTERVAL '${interval}'
+       WHERE id = $1
+       RETURNING subscription_status, subscription_type, subscription_end`,
+      [user_id, type]
+    );
+
+    console.log("PAYMENT VERIFIED:", result.rows[0]);
+
+    res.json({
+      success: true,
+      message: "Payment verified & subscription activated ✅",
+      data: result.rows[0]
+    });
+
+  } catch (err) {
+    console.error("VERIFY ERROR:", err);
+    res.status(500).json({ error: "Verification failed ❌" });
+  }
+});
+
+
+//====================check subscription=========================
 
 app.post("/activate-subscription", async (req, res) => {
   try {
@@ -442,6 +481,7 @@ app.post("/check-subscription", async (req, res) => {
     const result = await pool.query(`
       SELECT 
         subscription_status,
+        subscription_type,
         subscription_end,
         CASE 
           WHEN subscription_end IS NULL OR subscription_end < NOW()
@@ -461,6 +501,7 @@ app.post("/check-subscription", async (req, res) => {
     res.json({
       success: true,
       status: user.real_status,
+      subscription_type: user.subscription_type,
       subscription_end: user.subscription_end
     });
 
@@ -470,46 +511,6 @@ app.post("/check-subscription", async (req, res) => {
   }
 });
 
-// app.post("/check-subscription", async (req, res) => {
-//   try {
-//     const { user_id } = req.body;
-
-//     const result = await pool.query(
-//       "SELECT subscription_status, subscription_end FROM users WHERE id=$1",
-//       [user_id]
-//     );
-
-//     if (result.rows.length === 0) {
-//       return res.status(404).json({ error: "User not found" });
-//     }
-
-//     const user = result.rows[0];
-
-//     let status = user.subscription_status;
-
-//     // ✅ ONLY EXPIRE (DON’T FORCE ACTIVE)
-//     if (!user.subscription_end || new Date(user.subscription_end) < new Date()) {
-//       status = "inactive";
-
-//       await pool.query(
-//         "UPDATE users SET subscription_status='inactive' WHERE id=$1",
-//         [user_id]
-//       );
-//     }
-
-//     // ❌ DO NOT FORCE ACTIVE HERE
-
-//     res.json({
-//       success: true,
-//       status,
-//       subscription_end: user.subscription_end
-//     });
-
-//   } catch (err) {
-//     console.error("CHECK SUB ERROR:", err);
-//     res.status(500).json({ error: "Server error" });
-//   }
-// }); 
 // ================== LEADERBOARD ==================
 app.get("/leaderboard", async (req, res) => {
   const result = await pool.query(`
