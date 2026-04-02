@@ -18,16 +18,40 @@ app.use(cors({
 app.use(express.json());
 
 // ================== DB CHECK ==================
-// ✅ DB CHECK (simple, safe)
-setInterval(async () => {
+(async () => {
   try {
     await pool.query("SELECT 1");
-    console.log("✅ DB working");
+    console.log("✅ DB connected");
   } catch (err) {
-    console.log("⏳ DB sleeping...");
+    console.error("❌ DB ERROR:", err.message);
   }
-}, 10000);
-        
+})();
+
+
+//============latest draw========================
+
+app.get("/latest-draw", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM draws
+      ORDER BY created_at DESC
+      LIMIT 1
+    `);
+
+    if (result.rows.length === 0) {
+      return res.json({ numbers: [] });
+    }
+
+    res.json({
+      numbers: result.rows[0].numbers
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch draw" });
+  }
+});
+
 
 // ================== AUTO EXPIRE (REAL AUTO) ==================
 setInterval(async () => {
@@ -46,7 +70,7 @@ setInterval(async () => {
   } catch (err) {
     console.error("❌ Expiry error:", err);
   }
-}, 60 * 60 * 1000); 
+}, 60 * 60 * 1000);
 
 // ================== TEST ==================
 app.get("/", (req, res) => {
@@ -92,10 +116,71 @@ app.post("/select-charity", async (req, res) => {
   res.json({ message: "Selected" });
 });
 // ================== DRAW ==================
+// app.post("/draw", async (req, res) => {
+//   try {
+
+//     const existing = await pool.query(`
+//       SELECT * FROM draws 
+//       WHERE DATE(created_at) = CURRENT_DATE
+//     `);
+
+//     if (existing.rows.length > 0) {
+//       return res.json({
+//         message: "Draw already done today ⚠️",
+//         numbers: existing.rows[0].numbers
+//       });
+//     }
+
+//     const numbers = [];
+
+//     while (numbers.length < 5) {
+//       const n = Math.floor(Math.random() * 45) + 1;
+//       if (!numbers.includes(n)) {
+//         numbers.push(n);
+//       }
+//     }
+
+//     await pool.query(
+//       "INSERT INTO draws (numbers) VALUES ($1) RETURNING *",
+//       [numbers]
+//     );
+
+//     console.log("🎲 ADMIN DRAW:", numbers);
+
+//     res.json({
+//       message: "Draw completed",
+//       numbers
+//     });
+
+//   } catch (err) {
+//     console.error(err);
+//     res.status(500).json({ error: "Draw failed" });
+//   }
+// });
+
+
 app.post("/draw", async (req, res) => {
   try {
-    const numbers = [];
+    console.log("🎲 Admin triggered draw");
 
+    // MONTHLY CHECK
+    const existing = await pool.query(`
+    SELECT * FROM draws
+    WHERE DATE_TRUNC('month', created_at AT TIME ZONE 'Asia/Kolkata') =
+          DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+    ORDER BY created_at DESC
+    LIMIT 1
+  `);
+
+    if (existing.rows.length > 0) {
+      return res.status(400).json({
+        error: "Draw already done this month",
+        numbers: existing.rows[0].numbers 
+      });
+    }
+
+    // GENERATE NUMBERS
+    const numbers = [];
     while (numbers.length < 5) {
       const n = Math.floor(Math.random() * 45) + 1;
       if (!numbers.includes(n)) {
@@ -103,10 +188,9 @@ app.post("/draw", async (req, res) => {
       }
     }
 
-    console.log("DRAW NUMBERS:", numbers);
-
+    //  SAVE
     await pool.query(
-      "INSERT INTO draws (numbers) VALUES ($1) RETURNING *",
+      "INSERT INTO draws (numbers) VALUES ($1)",
       [numbers]
     );
 
