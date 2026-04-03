@@ -106,58 +106,51 @@ app.post("/charities", async (req, res) => {
 });
 // ================== SELECT CHARITY ==================
 app.post("/select-charity", async (req, res) => {
-  const { user_id, charity_id } = req.body;
+  try {
+    const { user_id, charity_id } = req.body;
 
-  await pool.query(
-    "UPDATE users SET charity_id=$1 WHERE id=$2",
-    [charity_id, user_id]
-  );
+    // 🔒 CHECK SUBSCRIPTION
+    const sub = await pool.query(
+      "SELECT subscription_end FROM users WHERE id=$1",
+      [user_id]
+    );
 
-  res.json({ message: "Selected" });
+    const end = sub.rows[0]?.subscription_end;
+
+    // ❌ NOT SUBSCRIBED
+    if (!end) {
+      return res.status(403).json({
+        error: "Please subscribe to select charity ❌"
+      });
+    }
+
+    // ❌ EXPIRED
+    if (new Date(end) < new Date()) {
+      const formattedDate = new Date(end).toLocaleDateString("en-IN", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric"
+      });
+
+      return res.status(403).json({
+        error: `Subscription expired on ${formattedDate} ❌ Please renew`
+      });
+    }
+
+    // ✅ UPDATE
+    await pool.query(
+      "UPDATE users SET charity_id=$1 WHERE id=$2",
+      [charity_id, user_id]
+    );
+
+    res.json({ message: "Charity selected ✅" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Something went wrong ❌" });
+  }
 });
 // ================== DRAW ==================
-// app.post("/draw", async (req, res) => {
-//   try {
-
-//     const existing = await pool.query(`
-//       SELECT * FROM draws 
-//       WHERE DATE(created_at) = CURRENT_DATE
-//     `);
-
-//     if (existing.rows.length > 0) {
-//       return res.json({
-//         message: "Draw already done today ⚠️",
-//         numbers: existing.rows[0].numbers
-//       });
-//     }
-
-//     const numbers = [];
-
-//     while (numbers.length < 5) {
-//       const n = Math.floor(Math.random() * 45) + 1;
-//       if (!numbers.includes(n)) {
-//         numbers.push(n);
-//       }
-//     }
-
-//     await pool.query(
-//       "INSERT INTO draws (numbers) VALUES ($1) RETURNING *",
-//       [numbers]
-//     );
-
-//     console.log("🎲 ADMIN DRAW:", numbers);
-
-//     res.json({
-//       message: "Draw completed",
-//       numbers
-//     });
-
-//   } catch (err) {
-//     console.error(err);
-//     res.status(500).json({ error: "Draw failed" });
-//   }
-// });
-
 
 app.post("/draw", async (req, res) => {
   try {
@@ -168,14 +161,14 @@ app.post("/draw", async (req, res) => {
     SELECT * FROM draws
     WHERE DATE_TRUNC('month', created_at AT TIME ZONE 'Asia/Kolkata') =
           DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC 
     LIMIT 1
   `);
 
     if (existing.rows.length > 0) {
       return res.status(400).json({
         error: "Draw already done this month",
-        numbers: existing.rows[0].numbers 
+        numbers: existing.rows[0].numbers
       });
     }
 
@@ -236,9 +229,131 @@ app.post("/users", async (req, res) => {
   }
 });
 
+// app.post("/check-result", async (req, res) => {
+//   try {
+//     const { user_id } = req.body;
+
+//     // 1️⃣ GET LATEST DRAW
+//     const draw = await pool.query(
+//       "SELECT * FROM draws ORDER BY created_at DESC LIMIT 1"
+//     );
+
+//     if (draw.rows.length === 0) {
+//       return res.json({ result: "No draw yet" });
+//     }
+
+//     const drawNumber = draw.rows[0].numbers;
+//     const drawId = draw.rows[0].id;
+
+//     // 2️⃣ GET USER LAST 5 SCORES
+//     const scores = await pool.query(
+//       "SELECT score FROM scores WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5",
+//       [user_id]
+//     );
+
+//     // 3️⃣ MATCH COUNT
+//     const matchCount = scores.rows.filter(s =>
+//       drawNumber.includes(Number(s.score))
+//     ).length;
+
+//     // 4️⃣ RESULT LOGIC
+//     let resultText = "LOSE 😢";
+
+//     if (matchCount === 3) resultText = "3 Match 🎉";
+//     else if (matchCount === 4) resultText = "4 Match 🔥";
+//     else if (matchCount >= 5) resultText = "5 Match 🏆";
+
+//     // 5️⃣ CHECK IF ALREADY EXISTS
+//     const existing = await pool.query(
+//       "SELECT * FROM winnings WHERE user_id=$1 AND draw_id=$2",
+//       [user_id, drawId]
+//     );
+
+//     // 6️⃣ INSERT ONLY ONCE
+//     if (existing.rows.length === 0 && matchCount >= 3) {
+
+//       // ================= PRIZE POOL =================
+
+//       // 🔹 total active users
+//       const totalUsers = await pool.query(
+//         "SELECT COUNT(*) FROM users WHERE subscription_status='active'"
+//       );
+
+//       const activeCount = parseInt(totalUsers.rows[0].count);
+
+//       // 🔹 total pool
+//       const poolAmount = activeCount * 100;
+
+//       // 🔹 prize based on match
+//       let amount = 0;
+
+//       if (matchCount === 5) amount = poolAmount * 0.4;
+//       else if (matchCount === 4) amount = poolAmount * 0.35;
+//       else if (matchCount === 3) amount = poolAmount * 0.25;
+
+//       // 🔹 count winners (same draw + same match)
+//       const winners = await pool.query(
+//         "SELECT COUNT(*) FROM winnings WHERE draw_id=$1 AND match_type=$2",
+//         [drawId, resultText]
+//       );
+
+//       const winnerCount = parseInt(winners.rows[0].count) || 1;
+
+//       // 🔹 final split
+//       const finalAmount = amount / winnerCount;
+
+//       // 🔹 save
+//       await pool.query(
+//         "INSERT INTO winnings (user_id, amount, draw_id, match_type) VALUES ($1,$2,$3,$4)",
+//         [user_id, finalAmount, drawId, resultText]
+//       );
+//     }
+
+//     // 7️⃣ RETURN RESULT
+//     res.json({
+//       result: resultText,
+//       numbers: drawNumber,
+//       matches: matchCount
+//     });
+
+//   } catch (err) {
+//     console.error("CHECK RESULT ERROR:", err);
+//     res.status(500).json({ error: "Result failed ❌" });
+//   }
+// });
+
+
+
 app.post("/check-result", async (req, res) => {
   try {
     const { user_id } = req.body;
+
+    // 🔥 0️⃣ CHECK SUBSCRIPTION FIRST
+    const userRes = await pool.query(
+      "SELECT subscription_end FROM users WHERE id=$1",
+      [user_id]
+    );
+
+    const user = userRes.rows[0];
+
+    // ❌ NOT SUBSCRIBED
+    if (!user.subscription_end) {
+      return res.status(403).json({
+        error: "⚠️ Please subscribe to check results"
+      });
+    }
+
+    // ❌ EXPIRED
+    if (new Date(user.subscription_end) < new Date()) {
+      return res.status(403).json({
+        error: `❌ Subscription expired on ${new Date(
+          user.subscription_end
+        ).toLocaleDateString()}`
+      });
+    }
+
+    // ================= NORMAL LOGIC =================
+
     // 1️⃣ GET LATEST DRAW
     const draw = await pool.query(
       "SELECT * FROM draws ORDER BY created_at DESC LIMIT 1"
@@ -250,6 +365,7 @@ app.post("/check-result", async (req, res) => {
 
     const drawNumber = draw.rows[0].numbers;
     const drawId = draw.rows[0].id;
+    const drawDate = draw.rows[0].created_at; // 🔥 ADD THIS
 
     // 2️⃣ GET USER LAST 5 SCORES
     const scores = await pool.query(
@@ -269,7 +385,7 @@ app.post("/check-result", async (req, res) => {
     else if (matchCount === 4) resultText = "4 Match 🔥";
     else if (matchCount >= 5) resultText = "5 Match 🏆";
 
-    // 5️⃣ CHECK IF WINNING ALREADY INSERTED
+    // 5️⃣ CHECK IF ALREADY EXISTS
     const existing = await pool.query(
       "SELECT * FROM winnings WHERE user_id=$1 AND draw_id=$2",
       [user_id, drawId]
@@ -277,17 +393,40 @@ app.post("/check-result", async (req, res) => {
 
     // 6️⃣ INSERT ONLY ONCE
     if (existing.rows.length === 0 && matchCount >= 3) {
+
+      const totalUsers = await pool.query(
+        "SELECT COUNT(*) FROM users WHERE subscription_status='active'"
+      );
+
+      const activeCount = parseInt(totalUsers.rows[0].count);
+      const poolAmount = Math.max(activeCount * 100, 500);
+
+      let amount = 0;
+
+      if (matchCount === 5) amount = poolAmount * 0.4;
+      else if (matchCount === 4) amount = poolAmount * 0.35;
+      else if (matchCount === 3) amount = poolAmount * 0.25;
+
+      const winners = await pool.query(
+        "SELECT COUNT(*) FROM winnings WHERE draw_id=$1 AND match_type=$2",
+        [drawId, resultText]
+      );
+
+      const winnerCount = parseInt(winners.rows[0].count) || 1;
+      const finalAmount = amount / winnerCount;
+
       await pool.query(
         "INSERT INTO winnings (user_id, amount, draw_id, match_type) VALUES ($1,$2,$3,$4)",
-        [user_id, matchCount * 100, drawId, resultText]
+        [user_id, finalAmount, drawId, resultText]
       );
     }
 
-    // 7️⃣ ALWAYS RETURN RESULT ✅
+    // 7️⃣ RETURN RESULT
     res.json({
       result: resultText,
       numbers: drawNumber,
-      matches: matchCount
+      matches: matchCount,
+      created_at: drawDate // 🔥 ADD THIS
     });
 
   } catch (err) {
@@ -295,7 +434,6 @@ app.post("/check-result", async (req, res) => {
     res.status(500).json({ error: "Result failed ❌" });
   }
 });
-
 
 app.post("/approve-winning", async (req, res) => {
   try {
@@ -378,6 +516,33 @@ app.post("/scores", async (req, res) => {
   try {
     const { user_id, score } = req.body;
 
+    // 🔒 CHECK SUBSCRIPTION
+    const sub = await pool.query(
+      "SELECT subscription_end FROM users WHERE id=$1",
+      [user_id]
+    );
+
+    const end = sub.rows[0]?.subscription_end;
+
+    // ❌ NOT SUBSCRIBED
+    if (!end) {
+      return res.status(403).json({
+        error: "Please subscribe to add score ❌"
+      });
+    }
+    if (new Date(end) < new Date()) {
+      const formattedDate = new Date(end).toLocaleDateString("en-IN", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric"
+      });
+
+      return res.status(403).json({
+        error: `Subscription expired on ${formattedDate} ❌ Please renew`
+      });
+    }
+
+    // ✅ VALIDATION
     if (!user_id || !score) {
       return res.status(400).json({ error: "Missing data" });
     }
@@ -388,11 +553,13 @@ app.post("/scores", async (req, res) => {
 
     const date = new Date();
 
+    // ✅ SAVE SCORE
     await pool.query(
       "INSERT INTO scores (user_id, score, created_at) VALUES ($1,$2,$3)",
       [user_id, score, date]
     );
 
+    // ✅ KEEP ONLY LAST 5
     await pool.query(`
       DELETE FROM scores
       WHERE id NOT IN (
@@ -407,7 +574,9 @@ app.post("/scores", async (req, res) => {
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({
+      error: "Something went wrong ❌"
+    });
   }
 });
 
