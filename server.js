@@ -374,9 +374,29 @@ app.post("/check-result", async (req, res) => {
     );
 
     // 3️⃣ MATCH COUNT
-    const matchCount = scores.rows.filter(s =>
-      drawNumber.includes(Number(s.score))
-    ).length;
+
+    function countMatches(userScores, drawNumbers) {
+      const drawCount = {};
+
+      drawNumbers.forEach(num => {
+        drawCount[num] = (drawCount[num] || 0) + 1;
+      });
+
+      let matches = 0;
+
+      userScores.forEach(num => {
+        if (drawCount[num] > 0) {
+          matches++;
+          drawCount[num]--;
+        }
+      });
+
+      return matches;
+    }
+
+    const userNumbers = scores.rows.map(s => Number(s.score));
+
+    const matchCount = countMatches(userNumbers, drawNumber);
 
     // 4️⃣ RESULT LOGIC
     let resultText = "LOSE 😢";
