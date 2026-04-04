@@ -830,8 +830,21 @@ app.get("/leaderboard", async (req, res) => {
 
   res.json(result.rows);
 });
+//===================jackpot=============
+app.get("/jackpot", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT amount FROM jackpot LIMIT 1"
+    );
 
-
+    res.json({
+      jackpot: result.rows[0]?.amount || 0
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch jackpot" });
+  }
+});
 
 // ================== SERVER ==================
 const PORT = process.env.PORT || 5000;
