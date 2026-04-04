@@ -211,7 +211,7 @@ app.post("/draw", async (req, res) => {
     // ✅ SAVE DRAW
     // ===============================
     const drawInsert = await pool.query(
-      "INSERT INTO draws (numbers) VALUES ($1) RETURNING *",
+      "INSERT INTO draws (numbers, created_at) VALUES ($1, NOW() AT TIME ZONE 'Asia/Kolkata') RETURNING *",
       [numbers]
     );
 
@@ -832,40 +832,6 @@ app.get("/leaderboard", async (req, res) => {
 });
 
 
-// // ================== AUTO MONTHLY DRAW ==================
-// setInterval(async () => {
-//   try {
-//     console.log("🕒 Checking monthly draw...");
-
-//     const existing = await pool.query(`
-//       SELECT * FROM draws
-//       WHERE DATE_TRUNC('month', created_at AT TIME ZONE 'Asia/Kolkata') =
-//             DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
-//     `);
-
-//     if (existing.rows.length === 0) {
-//       console.log("🎲 Running auto draw...");
-
-//       const numbers = [];
-//       while (numbers.length < 5) {
-//         const n = Math.floor(Math.random() * 45) + 1;
-//         if (!numbers.includes(n)) {
-//           numbers.push(n);
-//         }
-//       }
-
-//       await pool.query(
-//         "INSERT INTO draws (numbers) VALUES ($1)",
-//         [numbers]
-//       );
-
-//       console.log("✅ Auto draw completed:", numbers);
-//     }
-
-//   } catch (err) {
-//     console.error("❌ AUTO DRAW ERROR:", err);
-//   }
-// }, 24 * 60 * 60 * 1000); // runs daily
 
 // ================== SERVER ==================
 const PORT = process.env.PORT || 5000;
