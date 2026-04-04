@@ -43,7 +43,8 @@ app.get("/latest-draw", async (req, res) => {
     }
 
     res.json({
-      numbers: result.rows[0].numbers
+      numbers: result.rows[0].numbers,
+      created_at: result.rows[0].created_at //IMPORTANT
     });
 
   } catch (err) {
@@ -156,48 +157,205 @@ app.post("/draw", async (req, res) => {
   try {
     console.log("🎲 Admin triggered draw");
 
-    // MONTHLY CHECK
+    let { numbers } = req.body;
+
+    // ===============================
+    // ✅ MONTHLY CHECK
+    // ===============================
     const existing = await pool.query(`
-    SELECT * FROM draws
-    WHERE DATE_TRUNC('month', created_at AT TIME ZONE 'Asia/Kolkata') =
-          DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
-    ORDER BY created_at DESC 
-    LIMIT 1
-  `);
+      SELECT * FROM draws
+      WHERE DATE_TRUNC('month', created_at AT TIME ZONE 'Asia/Kolkata') =
+            DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+    `);
 
     if (existing.rows.length > 0) {
       return res.status(400).json({
-        error: "Draw already done this month",
-        numbers: existing.rows[0].numbers
+        error: "Draw already done this month"
       });
     }
 
-    // GENERATE NUMBERS
-    const numbers = [];
-    while (numbers.length < 5) {
-      const n = Math.floor(Math.random() * 45) + 1;
-      if (!numbers.includes(n)) {
-        numbers.push(n);
+    // ===============================
+    // 🔥 MANUAL NUMBERS (POSTMAN)
+    // ===============================
+    if (numbers && numbers.length > 0) {
+
+      if (numbers.length !== 5) {
+        return res.status(400).json({ error: "Enter exactly 5 numbers" });
       }
+
+      for (let n of numbers) {
+        if (n < 1 || n > 45) {
+          return res.status(400).json({ error: "Numbers must be 1–45" });
+        }
+      }
+
+      if (new Set(numbers).size !== 5) {
+        return res.status(400).json({ error: "No duplicates allowed" });
+      }
+
+    } else {
+      // ===============================
+      // 🔥 RANDOM GENERATION
+      // ===============================
+      numbers = [];
+
+      while (numbers.length < 5) {
+        const n = Math.floor(Math.random() * 45) + 1;
+        if (!numbers.includes(n)) numbers.push(n);
+      }
+
+      console.log("🎲 Random numbers:", numbers);
     }
 
-    //  SAVE
-    await pool.query(
-      "INSERT INTO draws (numbers) VALUES ($1)",
+    // ===============================
+    // ✅ SAVE DRAW
+    // ===============================
+    const drawInsert = await pool.query(
+      "INSERT INTO draws (numbers) VALUES ($1) RETURNING *",
       [numbers]
     );
 
+    const drawId = drawInsert.rows[0].id;
+
+    // ===============================
+    // 🔥 GET ACTIVE USERS
+    // ===============================
+    const usersRes = await pool.query(
+      "SELECT id FROM users WHERE subscription_status='active'"
+    );
+
+    const users = usersRes.rows;
+
+    // ===============================
+    // 🔥 GET SCORES
+    // ===============================
+    const scoresRes = await pool.query(`
+      SELECT user_id, score 
+      FROM scores 
+      ORDER BY created_at DESC
+    `);
+
+    const userScoresMap = {};
+
+    scoresRes.rows.forEach(s => {
+      if (!userScoresMap[s.user_id]) userScoresMap[s.user_id] = [];
+      if (userScoresMap[s.user_id].length < 5) {
+        userScoresMap[s.user_id].push(Number(s.score));
+      }
+    });
+
+    // ===============================
+    // 🔥 MATCH CALCULATION
+    // ===============================
+    const results = [];
+
+    users.forEach(u => {
+      const userNumbers = userScoresMap[u.id] || [];
+      const temp = [...numbers];
+
+      let match = 0;
+
+      userNumbers.forEach(num => {
+        const index = temp.indexOf(num);
+        if (index !== -1) {
+          match++;
+          temp.splice(index, 1);
+        }
+      });
+
+      results.push({ user_id: u.id, match });
+    });
+
+    // ===============================
+    // 🔥 COUNT WINNERS
+    // ===============================
+    const count3 = results.filter(r => r.match === 3).length;
+    const count4 = results.filter(r => r.match === 4).length;
+    const count5 = results.filter(r => r.match >= 5).length;
+
+    // ===============================
+    // 🔥 POOL CALCULATION
+    // ===============================
+    const basePool = Math.max(users.length * 100, 500);
+
+    const jackpotRes = await pool.query(
+      "SELECT amount FROM jackpot LIMIT 1"
+    );
+
+    const previousJackpot =
+      parseFloat(jackpotRes.rows[0].amount) || 0;
+
+    const poolAmount = basePool + previousJackpot;
+
+    // ===============================
+    // 🔥 PRIZE DISTRIBUTION (CORRECT)
+    // ===============================
+    const share = {
+      3: count3 ? (poolAmount * 0.25) / count3 : 0,
+      4: count4 ? (poolAmount * 0.35) / count4 : 0,
+      5: count5 ? (poolAmount * 0.4) / count5 : 0
+    };
+
+    // ===============================
+    // 🔥 SAVE WINNINGS
+    // ===============================
+    for (let r of results) {
+      if (r.match >= 3) {
+        const amount = Number(share[r.match].toFixed(2));
+
+        await pool.query(
+          `INSERT INTO winnings (user_id, amount, draw_id, match_type)
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (user_id, draw_id) DO NOTHING`,
+          [
+            r.user_id,
+            amount,
+            drawId,
+            r.match === 5
+              ? "5 Match 🏆"
+              : r.match === 4
+              ? "4 Match 🔥"
+              : "3 Match 🎉"
+          ]
+        );
+      }
+    }
+
+    // ===============================
+    // 🎯 JACKPOT LOGIC
+    // ===============================
+    if (count5 === 0) {
+      const newJackpot = Number((poolAmount * 0.4).toFixed(2));
+
+      await pool.query(
+        "UPDATE jackpot SET amount=$1",
+        [newJackpot]
+      );
+
+      console.log("💰 Jackpot carried:", newJackpot);
+    } else {
+      await pool.query("UPDATE jackpot SET amount=0");
+      console.log("🏆 Jackpot won → reset");
+    }
+
+    // ===============================
+    // ✅ RESPONSE
+    // ===============================
     res.json({
-      message: "Draw completed",
-      numbers
+      message: "Draw completed ✅",
+      numbers,
+      winners: {
+        match3: count3,
+        match4: count4,
+        match5: count5
+      }
     });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Draw failed" });
+    console.error("DRAW ERROR:", err);
+    res.status(500).json({ error: "Draw failed ❌" });
   }
 });
-
 
 
 // ================== REGISTER ==================
@@ -229,272 +387,12 @@ app.post("/users", async (req, res) => {
   }
 });
 
-// app.post("/check-result", async (req, res) => {
-//   try {
-//     const { user_id } = req.body;
-
-//     // 1️⃣ GET LATEST DRAW
-//     const draw = await pool.query(
-//       "SELECT * FROM draws ORDER BY created_at DESC LIMIT 1"
-//     );
-
-//     if (draw.rows.length === 0) {
-//       return res.json({ result: "No draw yet" });
-//     }
-
-//     const drawNumber = draw.rows[0].numbers;
-//     const drawId = draw.rows[0].id;
-
-//     // 2️⃣ GET USER LAST 5 SCORES
-//     const scores = await pool.query(
-//       "SELECT score FROM scores WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5",
-//       [user_id]
-//     );
-
-//     // 3️⃣ MATCH COUNT
-//     const matchCount = scores.rows.filter(s =>
-//       drawNumber.includes(Number(s.score))
-//     ).length;
-
-//     // 4️⃣ RESULT LOGIC
-//     let resultText = "LOSE 😢";
-
-//     if (matchCount === 3) resultText = "3 Match 🎉";
-//     else if (matchCount === 4) resultText = "4 Match 🔥";
-//     else if (matchCount >= 5) resultText = "5 Match 🏆";
-
-//     // 5️⃣ CHECK IF ALREADY EXISTS
-//     const existing = await pool.query(
-//       "SELECT * FROM winnings WHERE user_id=$1 AND draw_id=$2",
-//       [user_id, drawId]
-//     );
-
-//     // 6️⃣ INSERT ONLY ONCE
-//     if (existing.rows.length === 0 && matchCount >= 3) {
-
-//       // ================= PRIZE POOL =================
-
-//       // 🔹 total active users
-//       const totalUsers = await pool.query(
-//         "SELECT COUNT(*) FROM users WHERE subscription_status='active'"
-//       );
-
-//       const activeCount = parseInt(totalUsers.rows[0].count);
-
-//       // 🔹 total pool
-//       const poolAmount = activeCount * 100;
-
-//       // 🔹 prize based on match
-//       let amount = 0;
-
-//       if (matchCount === 5) amount = poolAmount * 0.4;
-//       else if (matchCount === 4) amount = poolAmount * 0.35;
-//       else if (matchCount === 3) amount = poolAmount * 0.25;
-
-//       // 🔹 count winners (same draw + same match)
-//       const winners = await pool.query(
-//         "SELECT COUNT(*) FROM winnings WHERE draw_id=$1 AND match_type=$2",
-//         [drawId, resultText]
-//       );
-
-//       const winnerCount = parseInt(winners.rows[0].count) || 1;
-
-//       // 🔹 final split
-//       const finalAmount = amount / winnerCount;
-
-//       // 🔹 save
-//       await pool.query(
-//         "INSERT INTO winnings (user_id, amount, draw_id, match_type) VALUES ($1,$2,$3,$4)",
-//         [user_id, finalAmount, drawId, resultText]
-//       );
-//     }
-
-//     // 7️⃣ RETURN RESULT
-//     res.json({
-//       result: resultText,
-//       numbers: drawNumber,
-//       matches: matchCount
-//     });
-
-//   } catch (err) {
-//     console.error("CHECK RESULT ERROR:", err);
-//     res.status(500).json({ error: "Result failed ❌" });
-//   }
-// });
-
-
-
-// app.post("/check-result", async (req, res) => {
-//   try {
-//     const { user_id } = req.body;
-
-//     // 🔥 0️⃣ CHECK SUBSCRIPTION FIRST
-//     const userRes = await pool.query(
-//       "SELECT subscription_end FROM users WHERE id=$1",
-//       [user_id]
-//     );
-
-//     const user = userRes.rows[0];
-
-//     // ❌ NOT SUBSCRIBED
-//     if (!user.subscription_end) {
-//       return res.status(403).json({
-//         error: "⚠️ Please subscribe to check results"
-//       });
-//     }
-
-//     // ❌ EXPIRED
-//     if (new Date(user.subscription_end) < new Date()) {
-//       return res.status(403).json({
-//         error: `❌ Subscription expired on ${new Date(
-//           user.subscription_end
-//         ).toLocaleDateString()}`
-//       });
-//     }
-
-//     // ================= NORMAL LOGIC =================
-
-//     // 1️⃣ GET LATEST DRAW
-//     const draw = await pool.query(
-//       "SELECT * FROM draws ORDER BY created_at DESC LIMIT 1"
-//     );
-
-//     if (draw.rows.length === 0) {
-//       return res.json({ result: "No draw yet" });
-//     }
-
-//     const drawNumber = draw.rows[0].numbers;
-//     const drawId = draw.rows[0].id;
-//     const drawDate = draw.rows[0].created_at; // 🔥 ADD THIS
-
-//     // 2️⃣ GET USER LAST 5 SCORES
-//     const scores = await pool.query(
-//       "SELECT score FROM scores WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5",
-//       [user_id]
-//     );
-
-//     // 3️⃣ MATCH COUNT
-
-//     function countMatches(userScores, drawNumbers) {
-//       const drawCount = {};
-
-//       drawNumbers.forEach(num => {
-//         drawCount[num] = (drawCount[num] || 0) + 1;
-//       });
-
-//       let matches = 0;
-
-//       userScores.forEach(num => {
-//         if (drawCount[num] > 0) {
-//           matches++;
-//           drawCount[num]--;
-//         }
-//       });
-
-//       return matches;
-//     }
-
-//     const userNumbers = scores.rows.map(s => Number(s.score));
-
-//     const matchCount = countMatches(userNumbers, drawNumber);
-
-//     // 4️⃣ RESULT LOGIC
-//     let resultText = "LOSE 😢";
-
-//     if (matchCount === 3) resultText = "3 Match 🎉";
-//     else if (matchCount === 4) resultText = "4 Match 🔥";
-//     else if (matchCount >= 5) resultText = "5 Match 🏆";
-
-//     // 5️⃣ CHECK IF ALREADY EXISTS
-//     const existing = await pool.query(
-//       "SELECT * FROM winnings WHERE user_id=$1 AND draw_id=$2",
-//       [user_id, drawId]
-//     );
-
-//     // 6️⃣ INSERT ONLY ONCE
-//     if (existing.rows.length === 0 && matchCount >= 3) {
-
-//       // 🎯 CHECK 5-MATCH WINNERS
-//       const fiveMatchWinners = await pool.query(
-//         "SELECT COUNT(*) FROM winnings WHERE draw_id=$1 AND match_type='5 Match 🏆'",
-//         [drawId]
-//       );
-
-//       const fiveCount = parseInt(fiveMatchWinners.rows[0].count);
-
-//       // ❌ NO WINNER → SAVE JACKPOT
-//       if (fiveCount === 0) {
-//         const jackpotAmount = poolAmount * 0.4;
-
-//         await pool.query(
-//           "UPDATE jackpot SET amount = $1",
-//           [jackpotAmount]
-//         );
-
-//         console.log("💰 Jackpot carried forward:", jackpotAmount);
-//       }
-
-//       // ✅ WINNER EXISTS → RESET JACKPOT
-//       else {
-//         await pool.query("UPDATE jackpot SET amount = 0");
-//       }
-
-//       const totalUsers = await pool.query(
-//         "SELECT COUNT(*) FROM users WHERE subscription_status='active'"
-//       );
-
-//       const activeCount = parseInt(totalUsers.rows[0].count);
-
-//       // 🔹 get previous jackpot
-//       const jackpotRes = await pool.query("SELECT amount FROM jackpot LIMIT 1");
-//       const previousJackpot = parseFloat(jackpotRes.rows[0].amount) || 0;
-
-//       // 🔹 new pool
-//       const basePool = Math.max(activeCount * 100, 500);
-
-//       // 🔹 total pool with rollover
-//       const poolAmount = basePool + previousJackpot;
-
-//       let amount = 0;
-
-//       if (matchCount === 5) amount = poolAmount * 0.4;
-//       else if (matchCount === 4) amount = poolAmount * 0.35;
-//       else if (matchCount === 3) amount = poolAmount * 0.25;
-
-//       const winners = await pool.query(
-//         "SELECT COUNT(*) FROM winnings WHERE draw_id=$1 AND match_type=$2",
-//         [drawId, resultText]
-//       );
-
-//       const winnerCount = parseInt(winners.rows[0].count) || 1;
-//       const finalAmount = amount / winnerCount;
-
-//       await pool.query(
-//         "INSERT INTO winnings (user_id, amount, draw_id, match_type) VALUES ($1,$2,$3,$4)",
-//         [user_id, finalAmount, drawId, resultText]
-//       );
-//     }
-
-//     // 7️⃣ RETURN RESULT
-//     res.json({
-//       result: resultText,
-//       numbers: drawNumber,
-//       matches: matchCount,
-//       created_at: drawDate // 🔥 ADD THIS
-//     });
-
-//   } catch (err) {
-//     console.error("CHECK RESULT ERROR:", err);
-//     res.status(500).json({ error: "Result failed ❌" });
-//   }
-// });
-
 
 app.post("/check-result", async (req, res) => {
   try {
     const { user_id } = req.body;
 
-    // 🔥 0️⃣ CHECK SUBSCRIPTION FIRST
+    // ✅ subscription check
     const userRes = await pool.query(
       "SELECT subscription_end FROM users WHERE id=$1",
       [user_id]
@@ -516,20 +414,21 @@ app.post("/check-result", async (req, res) => {
       });
     }
 
-    // ================= 1️⃣ GET DRAW =================
-    const draw = await pool.query(
-      "SELECT * FROM draws ORDER BY created_at DESC LIMIT 1"
-    );
+    // ✅ get latest draw
+    const draw = await pool.query(`
+      SELECT * FROM draws
+      ORDER BY created_at DESC
+      LIMIT 1
+    `);
 
     if (draw.rows.length === 0) {
       return res.json({ result: "No draw yet" });
     }
 
     const drawNumber = draw.rows[0].numbers;
-    const drawId = draw.rows[0].id;
     const drawDate = draw.rows[0].created_at;
 
-    // ================= 2️⃣ USER SCORES =================
+    // ✅ get user scores
     const scores = await pool.query(
       "SELECT score FROM scores WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5",
       [user_id]
@@ -537,123 +436,39 @@ app.post("/check-result", async (req, res) => {
 
     const userNumbers = scores.rows.map(s => Number(s.score));
 
-    // ================= 3️⃣ MATCH LOGIC =================
-    function countMatches(userScores, drawNumbers) {
-      const drawCount = {};
-
-      drawNumbers.forEach(num => {
-        drawCount[num] = (drawCount[num] || 0) + 1;
-      });
-
-      let matches = 0;
+    // ✅ match logic
+    const countMatches = (userScores, drawNumbers) => {
+      const temp = [...drawNumbers];
+      let match = 0;
 
       userScores.forEach(num => {
-        if (drawCount[num] > 0) {
-          matches++;
-          drawCount[num]--;
+        const i = temp.indexOf(num);
+        if (i !== -1) {
+          match++;
+          temp.splice(i, 1);
         }
       });
 
-      return matches;
-    }
+      return match;
+    };
 
     const matchCount = countMatches(userNumbers, drawNumber);
 
-    // ================= 4️⃣ RESULT =================
     let resultText = "LOSE 😢";
-
     if (matchCount === 3) resultText = "3 Match 🎉";
     else if (matchCount === 4) resultText = "4 Match 🔥";
     else if (matchCount >= 5) resultText = "5 Match 🏆";
 
-    // ================= 5️⃣ CHECK EXIST =================
-    const existing = await pool.query(
-      "SELECT * FROM winnings WHERE user_id=$1 AND draw_id=$2",
-      [user_id, drawId]
-    );
-
-    // ================= 6️⃣ PRIZE + JACKPOT =================
-    if (existing.rows.length === 0 && matchCount >= 3) {
-
-      // 🔹 active users
-      const totalUsers = await pool.query(
-        "SELECT COUNT(*) FROM users WHERE subscription_status='active'"
-      );
-
-      const activeCount = parseInt(totalUsers.rows[0].count);
-
-      // 🔹 previous jackpot
-      const jackpotRes = await pool.query(
-        "SELECT amount FROM jackpot LIMIT 1"
-      );
-      const previousJackpot =
-        parseFloat(jackpotRes.rows[0].amount) || 0;
-
-      // 🔹 pool calculation
-      const basePool = Math.max(activeCount * 100, 500);
-      const poolAmount = basePool + previousJackpot;
-
-      // 🔹 prize amount
-      let amount = 0;
-
-      if (matchCount === 5) amount = poolAmount * 0.4;
-      else if (matchCount === 4) amount = poolAmount * 0.35;
-      else if (matchCount === 3) amount = poolAmount * 0.25;
-
-      // 🔹 winner split
-      const winners = await pool.query(
-        "SELECT COUNT(*) FROM winnings WHERE draw_id=$1 AND match_type=$2",
-        [drawId, resultText]
-      );
-
-      const winnerCount = parseInt(winners.rows[0].count) || 1;
-      const finalAmount = amount / winnerCount;
-
-      // 🔹 save winning
-      await pool.query(
-        "INSERT INTO winnings (user_id, amount, draw_id, match_type) VALUES ($1,$2,$3,$4)",
-        [user_id, finalAmount, drawId, resultText]
-      );
-
-      // ================= 🎯 JACKPOT LOGIC =================
-
-      // 🔹 check if any 5-match winner exists
-      const fiveCheck = await pool.query(
-        "SELECT COUNT(*) FROM winnings WHERE draw_id=$1 AND match_type='5 Match 🏆'",
-        [drawId]
-      );
-
-      const fiveCount = parseInt(fiveCheck.rows[0].count);
-
-      // ❌ no winner → carry forward
-      if (fiveCount === 0) {
-        const jackpotAmount = poolAmount * 0.4;
-
-        await pool.query(
-          "UPDATE jackpot SET amount=$1",
-          [jackpotAmount]
-        );
-
-        console.log("💰 Jackpot carried forward:", jackpotAmount);
-      }
-
-      // ✅ winner → reset jackpot
-      else {
-        await pool.query("UPDATE jackpot SET amount=0");
-        console.log("🏆 Jackpot won → reset");
-      }
-    }
-
-    // ================= 7️⃣ RESPONSE =================
+    // ✅ just return result (NO calculation)
     res.json({
       result: resultText,
-      numbers: drawNumber,
       matches: matchCount,
+      numbers: drawNumber,
       created_at: drawDate
     });
 
   } catch (err) {
-    console.error("CHECK RESULT ERROR:", err);
+    console.error(err);
     res.status(500).json({ error: "Result failed ❌" });
   }
 });
@@ -762,6 +577,20 @@ app.post("/scores", async (req, res) => {
 
       return res.status(403).json({
         error: `Subscription expired on ${formattedDate} ❌ Please renew`
+      });
+    }
+
+
+    // 🔒 CHECK IF DRAW ALREADY DONE THIS MONTH
+    const drawCheck = await pool.query(`
+      SELECT * FROM draws
+      WHERE DATE_TRUNC('month', created_at AT TIME ZONE 'Asia/Kolkata') =
+            DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+    `);
+
+    if (drawCheck.rows.length > 0) {
+      return res.status(403).json({
+        error: "⚠️ Draw completed. Score entry closed for this month"
       });
     }
 
@@ -1001,6 +830,42 @@ app.get("/leaderboard", async (req, res) => {
 
   res.json(result.rows);
 });
+
+
+// // ================== AUTO MONTHLY DRAW ==================
+// setInterval(async () => {
+//   try {
+//     console.log("🕒 Checking monthly draw...");
+
+//     const existing = await pool.query(`
+//       SELECT * FROM draws
+//       WHERE DATE_TRUNC('month', created_at AT TIME ZONE 'Asia/Kolkata') =
+//             DATE_TRUNC('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+//     `);
+
+//     if (existing.rows.length === 0) {
+//       console.log("🎲 Running auto draw...");
+
+//       const numbers = [];
+//       while (numbers.length < 5) {
+//         const n = Math.floor(Math.random() * 45) + 1;
+//         if (!numbers.includes(n)) {
+//           numbers.push(n);
+//         }
+//       }
+
+//       await pool.query(
+//         "INSERT INTO draws (numbers) VALUES ($1)",
+//         [numbers]
+//       );
+
+//       console.log("✅ Auto draw completed:", numbers);
+//     }
+
+//   } catch (err) {
+//     console.error("❌ AUTO DRAW ERROR:", err);
+//   }
+// }, 24 * 60 * 60 * 1000); // runs daily
 
 // ================== SERVER ==================
 const PORT = process.env.PORT || 5000;
