@@ -211,7 +211,7 @@ app.post("/draw", async (req, res) => {
     // ✅ SAVE DRAW
     // ===============================
     const drawInsert = await pool.query(
-      "INSERT INTO draws (numbers, created_at) VALUES ($1, NOW() AT TIME ZONE 'Asia/Kolkata') RETURNING *",
+      "INSERT INTO draws (numbers, created_at) VALUES ($1, NOW()) RETURNING *",
       [numbers]
     );
 
