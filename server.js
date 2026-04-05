@@ -607,9 +607,7 @@ app.post("/scores", async (req, res) => {
     }
 
     // ✅ VALIDATION
-    // if (!user_id || !score) {
-    //   return res.status(400).json({ error: "Missing data" });
-    // }
+
 
     if (score < 1 || score > 45) {
       return res.status(400).json({ error: "Score 1–45 only" });
@@ -866,6 +864,154 @@ app.get("/jackpot", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to fetch jackpot" });
+  }
+});
+
+
+// ================= SIMULATE DRAW =================
+app.post("/simulate-draw", async (req, res) => {
+  try {
+    // 🔥 1️⃣ Get ONLY ACTIVE (subscribed) users
+    const usersRes = await pool.query(`
+      SELECT id, email FROM users 
+      WHERE subscription_status = 'active'
+    `);
+
+    const users = usersRes.rows;
+
+    if (users.length === 0) {
+      return res.json({
+        numbers: [],
+        results: [],
+        message: "No active users"
+      });
+    }
+
+    // 📊 2️⃣ Get all scores (latest first)
+    const scoresRes = await pool.query(`
+      SELECT user_id, score 
+      FROM scores 
+      ORDER BY created_at DESC
+    `);
+
+    // 👤 3️⃣ Last 5 scores per user
+    const userScoresMap = {};
+
+    scoresRes.rows.forEach(s => {
+      // ❗ only active users
+      if (!users.find(u => u.id === s.user_id)) return;
+
+      if (!userScoresMap[s.user_id]) {
+        userScoresMap[s.user_id] = [];
+      }
+
+      if (userScoresMap[s.user_id].length < 5) {
+        userScoresMap[s.user_id].push(Number(s.score));
+      }
+    });
+
+    let allScores = [];
+
+    Object.values(userScoresMap).forEach(arr => {
+      allScores.push(...arr);
+    });
+
+    // ❗ duplicates remove
+    allScores = [...new Set(allScores)];
+
+    if (allScores.length === 0) {
+      return res.json({
+        numbers: [],
+        results: [],
+        message: "No scores found"
+      });
+    }
+
+    // 🎲 5️⃣ Generate numbers FROM USER SCORES ONLY
+    const numbers = [];
+
+    while (numbers.length < 5 && allScores.length > 0) {
+      const index = Math.floor(Math.random() * allScores.length);
+      const n = allScores[index];
+
+      if (!numbers.includes(n)) {
+        numbers.push(n);
+      }
+    }
+
+    // 🎯 6️⃣ Match calculation (same as real draw)
+    const results = [];
+
+    users.forEach(u => {
+      const scores = userScoresMap[u.id] || [];
+
+      const temp = [...numbers];
+      let match = 0;
+
+      scores.forEach(num => {
+        const index = temp.indexOf(num);
+        if (index !== -1) {
+          match++;
+          temp.splice(index, 1);
+        }
+      });
+
+      results.push({
+        user_id: u.id,
+        email: u.email,
+        scores,
+        matchCount: match
+      });
+    });
+
+    // 💰 PRIZE CALCULATION
+    const count3 = results.filter(r => r.matchCount === 3).length;
+    const count4 = results.filter(r => r.matchCount === 4).length;
+    const count5 = results.filter(r => r.matchCount >= 5).length;
+
+    const basePool = users.length * 100;
+
+    const jackpotRes = await pool.query(
+      "SELECT amount FROM jackpot LIMIT 1"
+    );
+
+    const previousJackpot =
+      parseFloat(jackpotRes.rows[0]?.amount) || 0;
+
+    // ✅ RULE:
+    const poolAmount = basePool + previousJackpot;
+
+    const share = {
+      3: count3 ? Math.floor((poolAmount * 0.25) / count3) : 0,
+      4: count4 ? Math.floor((poolAmount * 0.35) / count4) : 0,
+      5: count5 ? Math.floor((poolAmount * 0.4) / count5) : 0
+    };
+
+    results.forEach(r => {
+      if (r.matchCount >= 3) {
+        r.prize =
+          r.matchCount === 5
+            ? share[5]
+            : r.matchCount === 4
+              ? share[4]
+              : share[3];
+      } else {
+        r.prize = 0;
+      }
+    });
+
+    // 📤 7️⃣ Response
+    res.json({
+      numbers,
+      results,
+      poolAmount
+    });
+
+  } catch (err) {
+    console.error("Simulation error:", err);
+    res.status(500).json({
+      error: "Simulation failed ❌"
+    });
   }
 });
 
