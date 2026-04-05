@@ -276,15 +276,13 @@ app.post("/draw", async (req, res) => {
     // ===============================
     // 🔥 POOL CALCULATION
     // ===============================
-    const basePool = Math.max(users.length * 100, 500);
-
     const jackpotRes = await pool.query(
       "SELECT amount FROM jackpot LIMIT 1"
     );
 
     const previousJackpot =
       parseFloat(jackpotRes.rows[0].amount) || 0;
-
+    const basePool = Math.max(users.length * 100, 500);
     const poolAmount = basePool + previousJackpot;
 
     // ===============================
@@ -301,12 +299,14 @@ app.post("/draw", async (req, res) => {
     // ===============================
     for (let r of results) {
       if (r.match >= 3) {
-        const amount = Number(share[r.match].toFixed(2));
+        // const amount = Number(share[r.match].toFixed(2));
+
+        const amount = Math.floor(share[r.match]);
 
         await pool.query(
-          `INSERT INTO winnings (user_id, amount, draw_id, match_type)
-           VALUES ($1,$2,$3,$4)
-           ON CONFLICT (user_id, draw_id) DO NOTHING`,
+          `INSERT INTO winnings (user_id, amount, draw_id, match_type, created_at)
+            VALUES ($1,$2,$3,$4, NOW())          
+            ON CONFLICT (user_id, draw_id) DO NOTHING`,
           [
             r.user_id,
             amount,
@@ -314,8 +314,8 @@ app.post("/draw", async (req, res) => {
             r.match === 5
               ? "5 Match 🏆"
               : r.match === 4
-              ? "4 Match 🔥"
-              : "3 Match 🎉"
+                ? "4 Match 🔥"
+                : "3 Match 🎉"
           ]
         );
       }
@@ -325,7 +325,7 @@ app.post("/draw", async (req, res) => {
     // 🎯 JACKPOT LOGIC
     // ===============================
     if (count5 === 0) {
-      const newJackpot = Number((poolAmount * 0.4).toFixed(2));
+      const newJackpot = Math.floor(poolAmount * 0.4);
 
       await pool.query(
         "UPDATE jackpot SET amount=$1",
@@ -337,6 +337,7 @@ app.post("/draw", async (req, res) => {
       await pool.query("UPDATE jackpot SET amount=0");
       console.log("🏆 Jackpot won → reset");
     }
+
 
     // ===============================
     // ✅ RESPONSE
@@ -410,7 +411,11 @@ app.post("/check-result", async (req, res) => {
       return res.status(403).json({
         error: `❌ Subscription expired on ${new Date(
           user.subscription_end
-        ).toLocaleDateString()}`
+        ).toLocaleDateString("en-IN", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric"
+        })}`
       });
     }
 
@@ -418,7 +423,7 @@ app.post("/check-result", async (req, res) => {
     const draw = await pool.query(`
       SELECT * FROM draws
       ORDER BY created_at DESC
-      LIMIT 1
+       LIMIT 1
     `);
 
     if (draw.rows.length === 0) {
@@ -458,6 +463,13 @@ app.post("/check-result", async (req, res) => {
     if (matchCount === 3) resultText = "3 Match 🎉";
     else if (matchCount === 4) resultText = "4 Match 🔥";
     else if (matchCount >= 5) resultText = "5 Match 🏆";
+
+    // JACKPOT RESET
+    if (matchCount >= 5) {
+      await pool.query(`
+    UPDATE jackpot SET amount = 0
+    `);
+    }
 
     // ✅ just return result (NO calculation)
     res.json({
@@ -595,21 +607,32 @@ app.post("/scores", async (req, res) => {
     }
 
     // ✅ VALIDATION
-    if (!user_id || !score) {
-      return res.status(400).json({ error: "Missing data" });
-    }
+    // if (!user_id || !score) {
+    //   return res.status(400).json({ error: "Missing data" });
+    // }
 
     if (score < 1 || score > 45) {
       return res.status(400).json({ error: "Score 1–45 only" });
     }
 
-    const date = new Date();
-
+    // const date = new Date().toLocaleString("en-US", {
+    //   timeZone: "Asia/Kolkata"
+    // });
     // ✅ SAVE SCORE
+    console.log("🔥 STEP 1 - API HIT");
+
     await pool.query(
-      "INSERT INTO scores (user_id, score, created_at) VALUES ($1,$2,$3)",
-      [user_id, score, date]
+      "INSERT INTO scores (user_id, score, created_at) VALUES ($1,$2, NOW())",
+      [user_id, score]
     );
+
+    console.log("🔥 STEP 2 - SCORE INSERTED");
+
+    await pool.query(`
+  UPDATE jackpot SET amount = amount + 10 
+`);
+
+    console.log("🔥 STEP 3 - JACKPOT UPDATED");
 
     // ✅ KEEP ONLY LAST 5
     await pool.query(`
