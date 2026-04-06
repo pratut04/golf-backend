@@ -281,19 +281,22 @@ app.post("/draw", async (req, res) => {
     );
 
     const previousJackpot =
-      parseFloat(jackpotRes.rows[0].amount) || 0;
-    const basePool = Math.max(users.length * 100, 500);
+      parseFloat(jackpotRes.rows[0]?.amount) || 0;
+
+    const basePool = users.length * 100;
     const poolAmount = basePool + previousJackpot;
 
     // ===============================
     // 🔥 PRIZE DISTRIBUTION (CORRECT)
     // ===============================
+    // 🔥 PRIZE DISTRIBUTION (FINAL LOGIC)
     const share = {
-      3: count3 ? (poolAmount * 0.25) / count3 : 0,
-      4: count4 ? (poolAmount * 0.35) / count4 : 0,
-      5: count5 ? (poolAmount * 0.4) / count5 : 0
+      3: count3 ? (basePool * 0.25) / count3 : 0,
+      4: count4 ? (basePool * 0.35) / count4 : 0,
+      5: count5
+        ? (previousJackpot + basePool * 0.4) / count5
+        : 0
     };
-
     // ===============================
     // 🔥 SAVE WINNINGS
     // ===============================
@@ -325,7 +328,8 @@ app.post("/draw", async (req, res) => {
     // 🎯 JACKPOT LOGIC
     // ===============================
     if (count5 === 0) {
-      const newJackpot = Math.floor(poolAmount * 0.4);
+      const newJackpot =
+        previousJackpot + Math.floor(basePool * 0.4);
 
       await pool.query(
         "UPDATE jackpot SET amount=$1",
@@ -464,12 +468,12 @@ app.post("/check-result", async (req, res) => {
     else if (matchCount === 4) resultText = "4 Match 🔥";
     else if (matchCount >= 5) resultText = "5 Match 🏆";
 
-    // JACKPOT RESET
-    if (matchCount >= 5) {
-      await pool.query(`
-    UPDATE jackpot SET amount = 0
-    `);
-    }
+    // // JACKPOT RESET
+    // if (matchCount >= 5) {
+    //   await pool.query(`
+    // UPDATE jackpot SET amount = 0
+    // `);
+    // }
 
     // ✅ just return result (NO calculation)
     res.json({
@@ -858,9 +862,21 @@ app.get("/jackpot", async (req, res) => {
       "SELECT amount FROM jackpot LIMIT 1"
     );
 
+    // ✅ COUNT ACTIVE USERS
+    const usersRes = await pool.query(
+      "SELECT COUNT(*) FROM users WHERE subscription_status='active'"
+    );
+
+    const activeUsers = Number(usersRes.rows[0].count);
+
+    // ✅ BASE POOL
+    const basePool = activeUsers * 100;
+
     res.json({
-      jackpot: result.rows[0]?.amount || 0
+      jackpot: result.rows[0]?.amount || 0,
+      basePool // 🔥 THIS WAS MISSING
     });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to fetch jackpot" });
@@ -981,10 +997,13 @@ app.post("/simulate-draw", async (req, res) => {
     // ✅ RULE:
     const poolAmount = basePool + previousJackpot;
 
+    // 🔥 PRIZE DISTRIBUTION (FINAL LOGIC)
     const share = {
-      3: count3 ? Math.floor((poolAmount * 0.25) / count3) : 0,
-      4: count4 ? Math.floor((poolAmount * 0.35) / count4) : 0,
-      5: count5 ? Math.floor((poolAmount * 0.4) / count5) : 0
+      3: count3 ? (basePool * 0.25) / count3 : 0,
+      4: count4 ? (basePool * 0.35) / count4 : 0,
+      5: count5
+        ? (previousJackpot + basePool * 0.4) / count5
+        : 0
     };
 
     results.forEach(r => {
