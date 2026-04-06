@@ -6,7 +6,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const pool = require("./db");
 const crypto = require("crypto");
-const Razorpay = require("razorpay");
+// const Razorpay = require("razorpay");
 
 const app = express();
 
@@ -27,7 +27,33 @@ app.use(express.json());
   }
 })();
 
+//================MIDDLEWARE===================
+const verifyToken = (req, res, next) => {
+  const auth = req.headers.authorization;
 
+  if (!auth) {
+    return res.status(401).json({ error: "No token" });
+  }
+
+  const token = auth.split(" ")[1];
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret123");
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(403).json({ error: "Invalid token" });
+  }
+};
+
+const verifyAdmin = (req, res, next) => {
+  if (!req.user || req.user.role !== "admin") {
+    return res.status(403).json({ 
+      code: "ADMIN_ONLY",
+      error: "Admin_only ❌" });
+  }
+  next();
+};
 //============latest draw========================
 
 app.get("/latest-draw", async (req, res) => {
@@ -48,7 +74,7 @@ app.get("/latest-draw", async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Latest draw error:", err.message);
     res.status(500).json({ error: "Failed to fetch draw" });
   }
 });
@@ -69,7 +95,7 @@ setInterval(async () => {
 
     console.log("✅ Expiry updated");
   } catch (err) {
-    console.error("❌ Expiry error:", err);
+    console.error("❌ Expiry error:", err.message);
   }
 }, 60 * 60 * 1000);
 
@@ -89,8 +115,9 @@ app.get("/charities", async (req, res) => {
   }
 });
 // ================== ADD CHARITY ==================
-app.post("/charities", async (req, res) => {
+app.post("/charities", verifyToken, verifyAdmin, async (req, res) => {
   try {
+
     const { name, description, image } = req.body;
 
     await pool.query(
@@ -101,14 +128,15 @@ app.post("/charities", async (req, res) => {
     res.json({ message: "Charity added" });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Charities error:", err.message);
     res.status(500).json({ error: "Add charity failed" });
   }
 });
 // ================== SELECT CHARITY ==================
-app.post("/select-charity", async (req, res) => {
+app.post("/select-charity", verifyToken, async (req, res) => {
   try {
-    const { user_id, charity_id } = req.body;
+    const user_id = req.user.id;
+    const { charity_id } = req.body;
 
     // 🔒 CHECK SUBSCRIPTION
     const sub = await pool.query(
@@ -121,6 +149,7 @@ app.post("/select-charity", async (req, res) => {
     // ❌ NOT SUBSCRIBED
     if (!end) {
       return res.status(403).json({
+        code: "NOT_SUBSCRIBED",
         error: "Please subscribe to select charity ❌"
       });
     }
@@ -147,13 +176,12 @@ app.post("/select-charity", async (req, res) => {
     res.json({ message: "Charity selected ✅" });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Add charity error:", err.message);
     res.status(500).json({ error: "Something went wrong ❌" });
   }
 });
 // ================== DRAW ==================
-
-app.post("/draw", async (req, res) => {
+app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
   try {
     console.log("🎲 Admin triggered draw");
 
@@ -357,7 +385,7 @@ app.post("/draw", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("DRAW ERROR:", err);
+    console.error("❌ Draw error:", err.message);
     res.status(500).json({ error: "Draw failed ❌" });
   }
 });
@@ -387,15 +415,15 @@ app.post("/users", async (req, res) => {
     res.json(result.rows[0]);
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Register error:", err.message);
     res.status(500).json({ error: "Register failed" });
   }
 });
 
 
-app.post("/check-result", async (req, res) => {
+app.post("/check-result", verifyToken, async (req, res) => {
   try {
-    const { user_id } = req.body;
+    const user_id = req.user.id;
 
     // ✅ subscription check
     const userRes = await pool.query(
@@ -484,12 +512,12 @@ app.post("/check-result", async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Result error:", err.message);
     res.status(500).json({ error: "Result failed ❌" });
   }
 });
 
-app.post("/approve-winning", async (req, res) => {
+app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { winning_id } = req.body;
 
@@ -500,13 +528,13 @@ app.post("/approve-winning", async (req, res) => {
 
     res.json({ message: "Approved ✅" });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Approve winning error:", err.message);
     res.status(500).json({ error: "Failed" });
   }
 });
 
 
-app.get("/all-winnings", async (req, res) => {
+app.get("/all-winnings", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT w.id, u.email, w.amount, w.status
@@ -517,7 +545,7 @@ app.get("/all-winnings", async (req, res) => {
 
     res.json(result.rows);
   } catch (err) {
-    console.error(err);
+    console.error("❌ Winnings fetch error:", err.message);
     res.status(500).json({ error: "Fetch failed" });
   }
 });
@@ -543,18 +571,25 @@ app.post("/login", async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user.id },
+      {
+        id: user.id,
+        role: user.role || "user"  // ✅ ADD THIS
+      },
       process.env.JWT_SECRET || "secret123",
       { expiresIn: "1d" }
     );
 
     res.json({
       token,
-      user: { id: user.id, email: user.email }
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role || "user"  // ✅ ADD THIS
+      }
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Login error:", err.message);
     res.status(500).json({ error: "Login failed" });
   }
 });
@@ -566,9 +601,10 @@ app.get("/users", async (req, res) => {
 });
 
 // ================== SCORES ==================
-app.post("/scores", async (req, res) => {
+app.post("/scores", verifyToken, async (req, res) => {
   try {
-    const { user_id, score } = req.body;
+    const user_id = req.user.id;
+    const { score } = req.body;
 
     // 🔒 CHECK SUBSCRIPTION
     const sub = await pool.query(
@@ -650,7 +686,7 @@ app.post("/scores", async (req, res) => {
     res.json({ message: "Score saved" });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Score error:", err.message);
     res.status(500).json({
       error: "Something went wrong ❌"
     });
@@ -662,23 +698,22 @@ app.get("/scores", async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT scores.*, users.email
-      FROM scores
+      FROM scores     
       JOIN users ON users.id = scores.user_id
       ORDER BY scores.created_at DESC
     `);
 
     res.json(result.rows);
   } catch (err) {
-    console.error(err);
+    console.error("❌ Scores fetch error:", err.message);
     res.status(500).json({ error: "Error fetching scores" });
   }
 });
 
 // ================== DASHBOARD ==================
-app.get("/dashboard/:id", async (req, res) => {
+app.get("/dashboard", verifyToken, async (req, res) => {
   try {
-    const id = req.params.id;
-
+    const id = req.user.id;
     console.log("Dashboard API called:", id);
 
     const user = await pool.query(`
@@ -710,25 +745,25 @@ app.get("/dashboard/:id", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("DASHBOARD ERROR:", err);
+    console.error("❌ Dashboard error:", err.message);
     res.status(500).json({ error: "Dashboard error" });
   }
 });
 
 //==================PAYMENT STATUS=================
 
-app.post("/verify-payment", async (req, res) => {
+app.post("/verify-payment", verifyToken, async (req, res) => {
   try {
     const {
       razorpay_payment_id,
       razorpay_order_id,
       razorpay_signature,
-      user_id,
       type
     } = req.body;
+    const user_id = req.user.id;
 
     // 🚨 MUST HAVE THESE
-    if (!razorpay_payment_id || !user_id || !type) {
+    if (!razorpay_payment_id || !type) {
       return res.status(400).json({ error: "Missing payment data ❌" });
     }
 
@@ -770,7 +805,7 @@ app.post("/verify-payment", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("VERIFY ERROR:", err);
+    console.error("❌ Verify payment error:", err.message);
     res.status(500).json({ error: "Verification failed ❌" });
   }
 });
@@ -778,9 +813,9 @@ app.post("/verify-payment", async (req, res) => {
 
 //====================check subscription=========================
 
-app.post("/activate-subscription", async (req, res) => {
+app.post("/activate-subscription", verifyToken, async (req, res) => {
   try {
-    const { user_id } = req.body;
+    const user_id = req.user.id;
 
     const result = await pool.query(
       `UPDATE users 
@@ -799,15 +834,15 @@ app.post("/activate-subscription", async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Activate subscription error:", err.message);
     res.status(500).json({ error: "Activation failed" });
   }
 });
 
 
-app.post("/check-subscription", async (req, res) => {
+app.post("/check-subscription", verifyToken, async (req, res) => {
   try {
-    const { user_id } = req.body;
+    const user_id = req.user.id;
 
     const result = await pool.query(`
       SELECT 
@@ -837,7 +872,7 @@ app.post("/check-subscription", async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Check subscription error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -878,14 +913,14 @@ app.get("/jackpot", async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Jackpot error:", err.message);
     res.status(500).json({ error: "Failed to fetch jackpot" });
   }
 });
 
 
 // ================= SIMULATE DRAW =================
-app.post("/simulate-draw", async (req, res) => {
+app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
   try {
     // 🔥 1️⃣ Get ONLY ACTIVE (subscribed) users
     const usersRes = await pool.query(`
@@ -1027,10 +1062,34 @@ app.post("/simulate-draw", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Simulation error:", err);
+    console.error("❌ Simulation error:", err.message);
     res.status(500).json({
       error: "Simulation failed ❌"
     });
+  }
+});
+
+const Razorpay = require("razorpay");
+
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
+
+app.post("/create-order", verifyToken, async (req, res) => {
+  try {
+    const { amount } = req.body;
+
+    const order = await razorpay.orders.create({
+      amount: amount * 100, // paise
+      currency: "INR",
+      receipt: "receipt_" + Date.now(),
+    });
+
+    res.json(order);
+  } catch (err) {
+    console.error("ORDER ERROR:", err);
+    res.status(500).json({ error: "Order creation failed" });
   }
 });
 
