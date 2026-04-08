@@ -17,6 +17,7 @@ app.use(cors({
 }));
 app.use(express.json());
 
+
 // ================== DB CHECK ==================
 (async () => {
   try {
