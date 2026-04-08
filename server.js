@@ -27,6 +27,29 @@ app.use(express.json());
   }
 })();
 
+const fs = require("fs");
+
+if (!fs.existsSync("uploads")) {
+  fs.mkdirSync("uploads");
+}
+
+
+//================Multer============================
+const multer = require("multer");
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/");
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + "-" + file.originalname);
+  }
+});
+
+const upload = multer({ storage });
+
+app.use("/uploads", express.static("uploads"));
+
 //================MIDDLEWARE===================
 const verifyToken = (req, res, next) => {
   const auth = req.headers.authorization;
@@ -48,9 +71,10 @@ const verifyToken = (req, res, next) => {
 
 const verifyAdmin = (req, res, next) => {
   if (!req.user || req.user.role !== "admin") {
-    return res.status(403).json({ 
+    return res.status(403).json({
       code: "ADMIN_ONLY",
-      error: "Admin_only ❌" });
+      error: "Admin_only ❌"
+    });
   }
   next();
 };
@@ -104,6 +128,29 @@ app.get("/", (req, res) => {
   res.send("Server running 🚀");
 });
 
+// ===========================Upload Proof================
+app.post("/upload-proof", verifyToken, upload.single("proof"), async (req, res) => {
+  try {
+    const filePath = "uploads/" + req.file.filename;
+    // 🔥 GET winningId FROM FRONTEND
+    const { winningId } = req.body;
+
+    if (!winningId) {
+      return res.status(400).json({ error: "Winning ID missing ❌" });
+    }
+
+    await pool.query(
+      "UPDATE winnings SET proof=$1 WHERE id=$2",
+      [filePath, winningId]
+    );
+
+    res.json({ message: "Proof uploaded ✅" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Upload failed ❌" });
+  }
+});
 // ==================  CHARITIES (FIX ADDED) ==================
 app.get("/charities", async (req, res) => {
   try {
@@ -537,7 +584,7 @@ app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
 app.get("/all-winnings", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT w.id, u.email, w.amount, w.status
+      SELECT w.id, u.email, w.amount, w.status, w.proof      
       FROM winnings w
       JOIN users u ON u.id = w.user_id
       ORDER BY w.created_at DESC
@@ -916,6 +963,20 @@ app.get("/jackpot", async (req, res) => {
     console.error("❌ Jackpot error:", err.message);
     res.status(500).json({ error: "Failed to fetch jackpot" });
   }
+});
+
+
+
+//===================reject button===========
+app.post("/reject-winning", verifyToken, verifyAdmin, async (req, res) => {
+  const { winning_id } = req.body;
+
+  await pool.query(
+    "UPDATE winnings SET status='rejected' WHERE id=$1",
+    [winning_id]
+  );
+
+  res.json({ message: "Rejected ❌" });
 });
 
 
