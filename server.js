@@ -571,7 +571,7 @@ app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
 
     console.log("🔥 Approve clicked:", winning_id);
 
-    // ✅ Step 1: Get winning FIRST
+    // ✅ Step 1: Get winning
     const win = await pool.query(
       "SELECT user_id, amount, status FROM winnings WHERE id = $1",
       [winning_id]
@@ -596,13 +596,34 @@ app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
       [winning_id]
     );
 
-    // ✅ Step 3: Charity
+    // ✅ Step 3: Charity calculation
     const charityAmount = amount * 0.1;
 
+    // 🔥 NEW: Get user's selected charity
+    const userCharity = await pool.query(
+      `SELECT c.name 
+       FROM users u
+       LEFT JOIN charities c ON u.charity_id = c.id
+       WHERE u.id = $1`,
+      [userId]
+    );
+
+    const charityName =
+      userCharity.rows[0]?.name || "Helping Hands"; // fallback
+
+    console.log("Charity:", charityName);
+
+    // ✅ Step 4: Insert donation
     await pool.query(
-      `INSERT INTO charity_donations (user_id, amount, charity_name)
-       VALUES ($1, $2, $3)`,
-      [userId, charityAmount, "Helping Hands"]
+      `INSERT INTO charity_donations 
+       (user_id, amount, charity_name, winning_id)
+       VALUES ($1, $2, $3, $4)`,
+      [
+        userId,
+        charityAmount,
+        charityName,   // ✅ dynamic now
+        winning_id
+      ]
     );
 
     console.log("✅ Charity inserted");
@@ -614,7 +635,6 @@ app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 
 app.get("/all-winnings", verifyToken, verifyAdmin, async (req, res) => {
   try {
@@ -1213,11 +1233,17 @@ app.get("/admin-stats", async (req, res) => {
       "SELECT COUNT(*) FROM winnings"
     );
 
+    // 🔥 NEW: TOTAL CHARITY
+    const charity = await pool.query(
+      "SELECT COALESCE(SUM(amount),0) FROM charity_donations"
+    );
+
     res.json({
       users: users.rows[0].count,
       paid: paid.rows[0].coalesce,
       pending: pending.rows[0].coalesce,
-      totalWinnings: totalWinnings.rows[0].count
+      totalWinnings: totalWinnings.rows[0].count,
+      totalCharity: charity.rows[0].coalesce   // ✅ NEW
     });
 
   } catch (err) {
@@ -1260,6 +1286,20 @@ app.get("/admin-analytics", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Server error" });
   }
+});
+
+
+
+// =============breakdown charity=====
+
+app.get("/charity-breakdown", async (req, res) => {
+  const result = await pool.query(`
+    SELECT charity_name, SUM(amount) AS total
+    FROM charity_donations
+    GROUP BY charity_name
+  `);
+
+  res.json(result.rows);
 });
 // ================== SERVER ==================
 const PORT = process.env.PORT || 5000;
