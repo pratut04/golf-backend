@@ -569,14 +569,48 @@ app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { winning_id } = req.body;
 
-    await pool.query(
-      "UPDATE winnings SET status = 'paid' WHERE id = $1 AND status = 'pending'",
+    console.log("🔥 Approve clicked:", winning_id);
+
+    // ✅ Step 1: Get winning FIRST
+    const win = await pool.query(
+      "SELECT user_id, amount, status FROM winnings WHERE id = $1",
       [winning_id]
     );
 
-    res.json({ message: "Approved ✅" });
+    if (win.rows.length === 0) {
+      return res.status(404).json({ error: "Winning not found ❌" });
+    }
+
+    if (win.rows[0].status !== "pending") {
+      return res.status(400).json({ error: "Already processed ❌" });
+    }
+
+    const userId = win.rows[0].user_id;
+    const amount = Number(win.rows[0].amount);
+
+    console.log("User:", userId, "Amount:", amount);
+
+    // ✅ Step 2: Update status
+    await pool.query(
+      "UPDATE winnings SET status = 'paid' WHERE id = $1",
+      [winning_id]
+    );
+
+    // ✅ Step 3: Charity
+    const charityAmount = amount * 0.1;
+
+    await pool.query(
+      `INSERT INTO charity_donations (user_id, amount, charity_name)
+       VALUES ($1, $2, $3)`,
+      [userId, charityAmount, "Helping Hands"]
+    );
+
+    console.log("✅ Charity inserted");
+
+    res.json({ message: "Approved + Charity Added ✅" });
+
   } catch (err) {
-    console.error("❌ Approve winning error:", err.message);
+    console.error("❌ FULL ERROR:", err);
     res.status(500).json({ error: "Failed" });
   }
 });
@@ -585,12 +619,19 @@ app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
 app.get("/all-winnings", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT w.id, u.email, w.amount, w.status, w.proof      
+      SELECT 
+        w.id,
+        u.email,
+        w.amount,
+        w.status,
+        w.proof,
+        w.match_type,
+        d.created_at AS draw_date
       FROM winnings w
       JOIN users u ON u.id = w.user_id
-      ORDER BY w.created_at DESC
+      JOIN draws d ON d.id = w.draw_id
+      ORDER BY d.created_at DESC
     `);
-
     res.json(result.rows);
   } catch (err) {
     console.error("❌ Winnings fetch error:", err.message);
@@ -1154,7 +1195,72 @@ app.post("/create-order", verifyToken, async (req, res) => {
     res.status(500).json({ error: "Order creation failed" });
   }
 });
+//==============admin stats============
 
+app.get("/admin-stats", async (req, res) => {
+  try {
+    const users = await pool.query("SELECT COUNT(*) FROM users");
+
+    const paid = await pool.query(
+      "SELECT COALESCE(SUM(amount),0) FROM winnings WHERE status='paid'"
+    );
+
+    const pending = await pool.query(
+      "SELECT COALESCE(SUM(amount),0) FROM winnings WHERE status='pending'"
+    );
+
+    const totalWinnings = await pool.query(
+      "SELECT COUNT(*) FROM winnings"
+    );
+
+    res.json({
+      users: users.rows[0].count,
+      paid: paid.rows[0].coalesce,
+      pending: pending.rows[0].coalesce,
+      totalWinnings: totalWinnings.rows[0].count
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+//==================admin-analytics=============
+app.get("/admin-analytics", async (req, res) => {
+  try {
+    // ✅ Monthly earnings
+    const monthly = await pool.query(`
+      SELECT 
+        DATE_TRUNC('month', created_at) AS month,
+        TO_CHAR(DATE_TRUNC('month', created_at), 'Mon YYYY') AS name,
+        SUM(amount) AS amount
+      FROM winnings
+      GROUP BY month
+      ORDER BY month
+    `);
+
+    // ✅ Total earnings
+    const total = await pool.query(
+      "SELECT SUM(amount) AS total FROM winnings"
+    );
+
+    // ✅ Avg winning
+    const avg = await pool.query(
+      "SELECT AVG(amount) AS avg FROM winnings"
+    );
+
+    res.json({
+      monthly: monthly.rows,
+      totalEarnings: total.rows[0].total || 0,
+      avgWinning: avg.rows[0].avg || 0
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 // ================== SERVER ==================
 const PORT = process.env.PORT || 5000;
 
