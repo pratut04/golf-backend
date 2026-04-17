@@ -471,13 +471,13 @@ app.post("/users", async (req, res) => {
     if (temp.rows.length > 0) {
       // 🔁 UPDATE existing temp user
       await pool.query(
-        "UPDATE temp_users SET password=$1, otp=$2, otp_expiry=$3 WHERE email=$4",
+        "UPDATE temp_users SET password=$1, otp=$2, otp_expiry=$3, otp_attempts=0 WHERE email=$4",
         [hash, otp, expiry, email]
       );
     } else {
       // 🆕 INSERT new temp user
       await pool.query(
-        "INSERT INTO temp_users (email, password, otp, otp_expiry) VALUES ($1,$2,$3,$4)",
+        "INSERT INTO temp_users (email, password, otp, otp_expiry, otp_attempts) VALUES ($1,$2,$3,$4,0)",
         [email, hash, otp, expiry]
       );
     }
@@ -522,27 +522,40 @@ app.post("/verify-otp", async (req, res) => {
 
     const user = tempUser.rows[0];
 
+    // 🔒 STEP 1: BLOCK AFTER 5 ATTEMPTS
+    if (user.otp_attempts >= 5) {
+      return res.status(403).json({
+        error: "Too many attempts ❌"
+      });
+    }
+
+    // ❌ WRONG OTP
     if (user.otp !== otp) {
+      await pool.query(
+        "UPDATE temp_users SET otp_attempts = otp_attempts + 1 WHERE email=$1",
+        [email]
+      );
+
       return res.status(400).json({ error: "Invalid OTP" });
     }
 
+    // ⏳ EXPIRED
     if (new Date(user.otp_expiry) < new Date()) {
       return res.status(400).json({ error: "OTP expired" });
     }
 
-    // INSERT into real users table
+    // ✅ SUCCESS → MOVE TO USERS
     await pool.query(
       "INSERT INTO users (email, password, is_verified) VALUES ($1,$2,true)",
       [user.email, user.password]
     );
 
-    //  DELETE from temp_users
     await pool.query(
       "DELETE FROM temp_users WHERE email=$1",
       [email]
     );
 
-    res.json({ message: "Account created successfully ✅" });
+    res.json({ message: "Account created ✅" });
 
   } catch (err) {
     console.error(err);
@@ -567,8 +580,11 @@ app.post("/resend-otp", async (req, res) => {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiry = new Date(Date.now() + 10 * 60 * 1000);
 
+    // ✅ UPDATE (not INSERT)
     await pool.query(
-      "UPDATE temp_users SET otp=$1, otp_expiry=$2 WHERE email=$3",
+      `UPDATE temp_users 
+       SET otp=$1, otp_expiry=$2, otp_attempts=0
+       WHERE email=$3`,
       [otp, expiry, email]
     );
 
