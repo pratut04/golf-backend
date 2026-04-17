@@ -445,30 +445,44 @@ app.post("/users", async (req, res) => {
   const { email, password } = req.body;
 
   try {
+    // 🔍 Check real users table
     const exists = await pool.query(
       "SELECT * FROM users WHERE email=$1",
       [email]
     );
 
     if (exists.rows.length > 0) {
-      return res.status(400).json({ error: "User exists" });
+      return res.status(400).json({ error: "User already exists" });
     }
 
-    const hash = await bcrypt.hash(password, 10);
-
-    // 🔥 OTP generate
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-    const expiry = new Date(Date.now() + 10 * 60 * 1000);
-
-    // 💾 save user (NOT verified)
-    await pool.query(
-      `INSERT INTO users (email, password, otp, otp_expiry, is_verified)
-       VALUES ($1,$2,$3,$4,false)`,
-      [email, hash, otp, expiry]
+    // 🔍 Check temp users
+    const temp = await pool.query(
+      "SELECT * FROM temp_users WHERE email=$1",
+      [email]
     );
 
-    // 📧 send OTP
+    // 🔐 hash password
+    const hash = await bcrypt.hash(password, 10);
+
+    // 🔢 OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiry = new Date(Date.now() + 10 * 60 * 1000);
+
+    if (temp.rows.length > 0) {
+      // 🔁 UPDATE existing temp user
+      await pool.query(
+        "UPDATE temp_users SET password=$1, otp=$2, otp_expiry=$3 WHERE email=$4",
+        [hash, otp, expiry, email]
+      );
+    } else {
+      // 🆕 INSERT new temp user
+      await pool.query(
+        "INSERT INTO temp_users (email, password, otp, otp_expiry) VALUES ($1,$2,$3,$4)",
+        [email, hash, otp, expiry]
+      );
+    }
+
+    // 📧 Send OTP
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
@@ -476,8 +490,6 @@ app.post("/users", async (req, res) => {
         pass: process.env.EMAIL_PASS
       }
     });
-    
-    res.json({ message: "OTP sent to email" });
 
     await transporter.sendMail({
       to: email,
@@ -485,10 +497,11 @@ app.post("/users", async (req, res) => {
       html: `<h2>Your OTP: ${otp}</h2>`
     });
 
+    res.json({ message: "OTP sent to email" });
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Register failed" });
+    res.status(500).json({ error: "Signup failed" });
   }
 });
 
@@ -498,31 +511,38 @@ app.post("/verify-otp", async (req, res) => {
   const { email, otp } = req.body;
 
   try {
-    const user = await pool.query(
-      "SELECT * FROM users WHERE email=$1",
+    const tempUser = await pool.query(
+      "SELECT * FROM temp_users WHERE email=$1",
       [email]
     );
 
-    if (user.rows.length === 0) {
+    if (tempUser.rows.length === 0) {
       return res.status(400).json({ error: "User not found" });
     }
 
-    const dbUser = user.rows[0];
+    const user = tempUser.rows[0];
 
-    if (dbUser.otp !== otp) {
+    if (user.otp !== otp) {
       return res.status(400).json({ error: "Invalid OTP" });
     }
 
-    if (new Date(dbUser.otp_expiry) < new Date()) {
+    if (new Date(user.otp_expiry) < new Date()) {
       return res.status(400).json({ error: "OTP expired" });
     }
 
+    // INSERT into real users table
     await pool.query(
-      "UPDATE users SET is_verified=true, otp=NULL, otp_expiry=NULL WHERE email=$1",
+      "INSERT INTO users (email, password, is_verified) VALUES ($1,$2,true)",
+      [user.email, user.password]
+    );
+
+    //  DELETE from temp_users
+    await pool.query(
+      "DELETE FROM temp_users WHERE email=$1",
       [email]
     );
 
-    res.json({ message: "Verified successfully ✅" });
+    res.json({ message: "Account created successfully ✅" });
 
   } catch (err) {
     console.error(err);
@@ -536,19 +556,19 @@ app.post("/resend-otp", async (req, res) => {
 
   try {
     const user = await pool.query(
-      "SELECT * FROM users WHERE email=$1",
+      "SELECT * FROM temp_users WHERE email=$1",
       [email]
     );
 
     if (user.rows.length === 0) {
-      return res.status(400).json({ error: "User not found" });
+      return res.status(400).json({ error: "No pending verification" });
     }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiry = new Date(Date.now() + 10 * 60 * 1000);
 
     await pool.query(
-      "UPDATE users SET otp=$1, otp_expiry=$2 WHERE email=$3",
+      "UPDATE temp_users SET otp=$1, otp_expiry=$2 WHERE email=$3",
       [otp, expiry, email]
     );
 
