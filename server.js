@@ -442,9 +442,9 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
 
 // ================== REGISTER ==================
 app.post("/users", async (req, res) => {
-  try {
-    const { email, password } = req.body;
+  const { email, password } = req.body;
 
+  try {
     const exists = await pool.query(
       "SELECT * FROM users WHERE email=$1",
       [email]
@@ -456,19 +456,125 @@ app.post("/users", async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
 
-    const result = await pool.query(
-      "INSERT INTO users (email, password) VALUES ($1,$2) RETURNING id,email",
-      [email, hash]
+    // 🔥 OTP generate
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    const expiry = new Date(Date.now() + 10 * 60 * 1000);
+
+    // 💾 save user (NOT verified)
+    await pool.query(
+      `INSERT INTO users (email, password, otp, otp_expiry, is_verified)
+       VALUES ($1,$2,$3,$4,false)`,
+      [email, hash, otp, expiry]
     );
 
-    res.json(result.rows[0]);
+    // 📧 send OTP
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+      }
+    });
+    
+    res.json({ message: "OTP sent to email" });
+
+    await transporter.sendMail({
+      to: email,
+      subject: "OTP Verification",
+      html: `<h2>Your OTP: ${otp}</h2>`
+    });
+
 
   } catch (err) {
-    console.error("❌ Register error:", err.message);
+    console.error(err);
     res.status(500).json({ error: "Register failed" });
   }
 });
 
+
+//==============verify otp========================
+app.post("/verify-otp", async (req, res) => {
+  const { email, otp } = req.body;
+
+  try {
+    const user = await pool.query(
+      "SELECT * FROM users WHERE email=$1",
+      [email]
+    );
+
+    if (user.rows.length === 0) {
+      return res.status(400).json({ error: "User not found" });
+    }
+
+    const dbUser = user.rows[0];
+
+    if (dbUser.otp !== otp) {
+      return res.status(400).json({ error: "Invalid OTP" });
+    }
+
+    if (new Date(dbUser.otp_expiry) < new Date()) {
+      return res.status(400).json({ error: "OTP expired" });
+    }
+
+    await pool.query(
+      "UPDATE users SET is_verified=true, otp=NULL, otp_expiry=NULL WHERE email=$1",
+      [email]
+    );
+
+    res.json({ message: "Verified successfully ✅" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Verification failed" });
+  }
+});
+
+//=================resend otp========================
+app.post("/resend-otp", async (req, res) => {
+  const { email } = req.body;
+
+  try {
+    const user = await pool.query(
+      "SELECT * FROM users WHERE email=$1",
+      [email]
+    );
+
+    if (user.rows.length === 0) {
+      return res.status(400).json({ error: "User not found" });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiry = new Date(Date.now() + 10 * 60 * 1000);
+
+    await pool.query(
+      "UPDATE users SET otp=$1, otp_expiry=$2 WHERE email=$3",
+      [otp, expiry, email]
+    );
+
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+      }
+    });
+
+    await transporter.sendMail({
+      to: email,
+      subject: "Resent OTP",
+      html: `<h2>Your OTP: ${otp}</h2>`
+    });
+
+    res.json({ message: "OTP resent" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to resend OTP" });
+  }
+});
+
+//====================check result========================
 
 app.post("/check-result", verifyToken, async (req, res) => {
   try {
@@ -680,6 +786,12 @@ app.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Wrong password" });
     }
 
+    if (!user.is_verified) {
+      return res.status(403).json({
+        error: "Please verify your email first ❌"
+      });
+    }
+
     const token = jwt.sign(
       {
         id: user.id,
@@ -743,7 +855,7 @@ app.post("/forgot-password", async (req, res) => {
     });
 
     //const resetLink = `http://localhost:5173/reset-password/${token}`;
-    const resetLink = `https://your-app.vercel.app/reset-password/${token}`;
+    const resetLink = `https://golf-frontend-mu.vercel.app/reset-password/${token}`;
 
     await transporter.sendMail({
       to: email,
