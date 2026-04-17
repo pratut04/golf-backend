@@ -125,6 +125,23 @@ setInterval(async () => {
   }
 }, 60 * 60 * 1000);
 
+
+// ================== CLEAN TEMP USERS ==================
+setInterval(async () => {
+  try {
+    console.log("🧹 Cleaning expired temp users...");
+
+    await pool.query(`
+      DELETE FROM temp_users
+      WHERE otp_expiry < NOW()
+    `);
+
+    console.log("✅ Expired temp users deleted");
+  } catch (err) {
+    console.error("❌ Cleanup error:", err.message);
+  }
+}, 10 * 60 * 1000); // every 10 min
+
 // ================== TEST ==================
 app.get("/", (req, res) => {
   res.send("Server running 🚀");
@@ -522,47 +539,46 @@ app.post("/verify-otp", async (req, res) => {
 
     const user = tempUser.rows[0];
 
-    // 🔒 STEP 1: BLOCK AFTER 5 ATTEMPTS
-    if (user.otp_attempts >= 5) {
-      return res.status(403).json({
-        error: "Too many attempts ❌"
-      });
-    }
-
-    // ❌ WRONG OTP
-    if (user.otp !== otp) {
-      await pool.query(
-        "UPDATE temp_users SET otp_attempts = otp_attempts + 1 WHERE email=$1",
-        [email]
-      );
-
-      return res.status(400).json({ error: "Invalid OTP" });
-    }
-
-    // ⏳ EXPIRED
+    // ⏳ Expiry check
     if (new Date(user.otp_expiry) < new Date()) {
       return res.status(400).json({ error: "OTP expired" });
     }
 
-    // ✅ SUCCESS → MOVE TO USERS
-    await pool.query(
-      "INSERT INTO users (email, password, is_verified) VALUES ($1,$2,true)",
-      [user.email, user.password]
-    );
+    // ✅ Correct OTP → SUCCESS
+    if (user.otp === otp) {
+      await pool.query(
+        "INSERT INTO users (email, password, is_verified) VALUES ($1,$2,true)",
+        [user.email, user.password]
+      );
 
+      await pool.query(
+        "DELETE FROM temp_users WHERE email=$1",
+        [email]
+      );
+
+      return res.json({ message: "Account created ✅" });
+    }
+
+    // 🔒 Block after 5 attempts
+    if (user.otp_attempts >= 5) {
+      return res.status(403).json({
+        error: "Too many attempts. Please resend OTP"
+      });
+    }
+
+    // ❌ Wrong OTP → increase attempts
     await pool.query(
-      "DELETE FROM temp_users WHERE email=$1",
+      "UPDATE temp_users SET otp_attempts = otp_attempts + 1 WHERE email=$1",
       [email]
     );
 
-    res.json({ message: "Account created ✅" });
+    return res.status(400).json({ error: "Invalid OTP" });
 
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Verification failed" });
   }
 });
-
 //=================resend otp========================
 app.post("/resend-otp", async (req, res) => {
   const { email } = req.body;
