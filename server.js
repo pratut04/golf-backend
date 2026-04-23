@@ -11,6 +11,7 @@ const nodemailer = require("nodemailer");
 
 const app = express();
 
+
 // ================== CORS ==================
 app.use(cors({
   origin: true,
@@ -29,35 +30,66 @@ app.use(express.json());
   }
 })();
 
-const fs = require("fs");
+// const fs = require("fs");
 
-if (!fs.existsSync("uploads")) {
-  fs.mkdirSync("uploads");
-}
+// // main uploads folder
+// if (!fs.existsSync("uploads")) {
+//   fs.mkdirSync("uploads");
+// }
+
+// // 🔥 new charities folder
+// if (!fs.existsSync("uploads/charities")) {
+//   fs.mkdirSync("uploads/charities", { recursive: true });
+// }
 
 
 //================Multer============================
 const multer = require("multer");
+const cloudinary = require("cloudinary").v2;
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/");
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + "-" + file.originalname);
-  }
+cloudinary.config({
+  cloud_name: process.env.CLOUD_NAME,
+  api_key: process.env.CLOUD_KEY,
+  api_secret: process.env.CLOUD_SECRET,
 });
 
-const upload = multer({ storage });
+// 🔥 storage (REPLACE diskStorage)
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: async (req, file) => {
+    if (file.fieldname === "proof") {
+      return {
+        folder: "proofs",
+        allowed_formats: ["jpg", "png", "jpeg"],
+      };
+    }
 
-app.use("/uploads", express.static("uploads"));
+    return {
+      folder: "charities",
+      allowed_formats: ["jpg", "png", "jpeg"],
+    };
+  },
+});
+
+// 🔥 upload
+const upload = multer({
+  storage,
+  limits: { fileSize: 2 * 1024 * 1024 },
+});
+
+
 
 //================MIDDLEWARE===================
 const verifyToken = (req, res, next) => {
   const auth = req.headers.authorization;
 
   if (!auth) {
-    return res.status(401).json({ error: "No token" });
+    return res.status(401).json({
+      success: false,
+      code: "NO_TOKEN",
+      message: "No token provided"
+    });
   }
 
   const token = auth.split(" ")[1];
@@ -67,15 +99,20 @@ const verifyToken = (req, res, next) => {
     req.user = decoded;
     next();
   } catch (err) {
-    return res.status(403).json({ error: "Invalid token" });
+    return res.status(403).json({
+      success: false,
+      code: "INVALID_TOKEN",
+      message: "Invalid token"
+    });
   }
 };
 
 const verifyAdmin = (req, res, next) => {
   if (!req.user || req.user.role !== "admin") {
     return res.status(403).json({
+      success: false,
       code: "ADMIN_ONLY",
-      error: "Admin_only ❌"
+      message: "Admin access required"
     });
   }
   next();
@@ -91,17 +128,25 @@ app.get("/latest-draw", async (req, res) => {
     `);
 
     if (result.rows.length === 0) {
-      return res.json({ numbers: [] });
+      return res.json({
+        success: true,
+        numbers: []
+      });
     }
 
     res.json({
+      success: true,
       numbers: result.rows[0].numbers,
       created_at: result.rows[0].created_at //IMPORTANT
     });
 
   } catch (err) {
     console.error("❌ Latest draw error:", err.message);
-    res.status(500).json({ error: "Failed to fetch draw" });
+    res.status(500).json({
+      success: false,
+      code: "LATEST_DRAW_FAILED",
+      message: "Failed to fetch draw"
+    });
   }
 });
 
@@ -150,12 +195,23 @@ app.get("/", (req, res) => {
 // ===========================Upload Proof================
 app.post("/upload-proof", verifyToken, upload.single("proof"), async (req, res) => {
   try {
-    const filePath = "uploads/" + req.file.filename;
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        code: "NO_FILE",
+        message: "File is required"
+      });
+    }
+    const filePath = req.file.path;
     // 🔥 GET winningId FROM FRONTEND
     const { winningId } = req.body;
 
     if (!winningId) {
-      return res.status(400).json({ error: "Winning ID missing ❌" });
+      return res.status(400).json({
+        success: false,
+        code: "MISSING_WINNING_ID",
+        message: "Winning ID is required"
+      });
     }
 
     await pool.query(
@@ -163,48 +219,117 @@ app.post("/upload-proof", verifyToken, upload.single("proof"), async (req, res) 
       [filePath, winningId]
     );
 
-    res.json({ message: "Proof uploaded ✅" });
+    res.json({
+      success: true,
+      message: "Proof uploaded"
+    });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Upload failed ❌" });
+    console.error("❌ Upload proof error:", err.message);
+    res.status(500).json({
+      success: false,
+      code: "SERVER_ERROR",
+      message: "Upload failed ❌"
+    });
   }
 });
 // ==================  CHARITIES (FIX ADDED) ==================
 app.get("/charities", async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM charities");
-    res.json(result.rows);
+    const result = await pool.query(`
+     SELECT 
+  c.*,
+
+  -- ✅ correct user count
+  (
+    SELECT COUNT(*)
+    FROM users u
+    WHERE u.charity_id = c.id
+  ) AS users_count,
+
+  -- ✅ correct images (NO DUPLICATES)
+  COALESCE(
+    (
+      SELECT JSON_AGG(
+        JSON_BUILD_OBJECT(
+          'id', ci.id,
+          'image', ci.image
+        )
+      )
+      FROM charity_images ci
+      WHERE ci.charity_id = c.id
+    ),
+    '[]'
+  ) AS images
+
+FROM charities c
+ORDER BY c.created_at DESC;
+    `);
+
+    res.json({
+      success: true,
+      data: result.rows
+    });
+
   } catch (err) {
     console.error("CHARITIES ERROR:", err);
-    res.status(500).json({ error: "Failed to fetch charities" });
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch charities"
+    });
   }
 });
 // ================== ADD CHARITY ==================
-app.post("/charities", verifyToken, verifyAdmin, async (req, res) => {
-  try {
+app.post(
+  "/charities",
+  verifyToken,
+  verifyAdmin,
+  upload.array("images", 5), // max 5 images,
+  async (req, res) => {
+    try {
+      const { name, description } = req.body;
 
-    const { name, description, image } = req.body;
+      const result = await pool.query(
+        "INSERT INTO charities (name, description) VALUES ($1,$2) RETURNING id",
+        [name, description]
+      );
 
-    await pool.query(
-      "INSERT INTO charities (name, description, image) VALUES ($1,$2,$3)",
-      [name, description, image]
-    );
+      const charityId = result.rows[0].id;
 
-    res.json({ message: "Charity added" });
+      //  multiple images
+      if (req.files && req.files.length > 0) {
+        for (let file of req.files) {
 
-  } catch (err) {
-    console.error("❌ Charities error:", err.message);
-    res.status(500).json({ error: "Add charity failed" });
+          await pool.query(
+            "INSERT INTO charity_images (charity_id, image) VALUES ($1,$2)",
+            [charityId, file.path] // ✅ FIX
+          );
+        }
+      }
+
+      res.json({
+        success: true,
+        message: "Charity added ✅"
+      });
+
+    } catch (err) {
+      console.error("❌ Add charity error:", err.message);
+      res.status(500).json({
+        success: false,
+        message: "Failed to add charity"
+      });
+    }
   }
-});
+);
 // ================== SELECT CHARITY ==================
 app.post("/select-charity", verifyToken, async (req, res) => {
   try {
     const user_id = req.user.id;
     const { charity_id } = req.body;
 
-    // 🔒 CHECK SUBSCRIPTION
+    // ===============================
+    // 🔒 SUBSCRIPTION CHECK
+    // ===============================
     const sub = await pool.query(
       "SELECT subscription_end FROM users WHERE id=$1",
       [user_id]
@@ -212,40 +337,106 @@ app.post("/select-charity", verifyToken, async (req, res) => {
 
     const end = sub.rows[0]?.subscription_end;
 
-    // ❌ NOT SUBSCRIBED
     if (!end) {
       return res.status(403).json({
+        success: false,
         code: "NOT_SUBSCRIBED",
-        error: "Please subscribe to select charity"
+        message: "Please subscribe to select charity"
       });
     }
 
-    // ❌ EXPIRED
     if (new Date(end) < new Date()) {
-      const formattedDate = new Date(end).toLocaleDateString("en-IN", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric"
-      });
-
       return res.status(403).json({
-        error: `Subscription expired on ${formattedDate} ❌ Please renew`
+        success: false,
+        code: "SUBSCRIPTION_EXPIRED",
+        message: "Subscription expired",
+        expiry: end
       });
     }
 
+    // ===============================
+    // ✅ CHECK CHARITY EXISTS
+    // ===============================
+    const charityCheck = await pool.query(
+      "SELECT id FROM charities WHERE id=$1",
+      [charity_id]
+    );
+
+    if (charityCheck.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_CHARITY",
+        message: "Charity not found"
+      });
+    }
+
+    // ===============================
+    // 🚫 CHECK ALREADY SELECTED (PUT HERE)
+    // ===============================
+    const already = await pool.query(
+      "SELECT charity_id FROM users WHERE id=$1",
+      [user_id]
+    );
+
+    if (Number(already.rows[0].charity_id) === Number(charity_id)) {
+      return res.status(400).json({
+        success: false,
+        code: "ALREADY_SELECTED",
+        message: "Charity already selected"
+      });
+    }
+
+    // ===============================
     // ✅ UPDATE
+    // ===============================
     await pool.query(
       "UPDATE users SET charity_id=$1 WHERE id=$2",
       [charity_id, user_id]
     );
 
-    res.json({ message: "Charity selected ✅" });
+    res.json({
+      success: true,
+      message: "Charity selected ✅"
+    });
 
   } catch (err) {
-    console.error("❌ Add charity error:", err.message);
-    res.status(500).json({ error: "Something went wrong ❌" });
+    console.error("❌ Select charity error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Something went wrong"
+    });
   }
 });
+
+
+//==============my-charity========================
+
+app.get("/my-charity", verifyToken, async (req, res) => {
+  try {
+    const user_id = req.user.id;
+
+    const result = await pool.query(`
+      SELECT c.*
+      FROM users u
+      LEFT JOIN charities c ON u.charity_id = c.id
+      WHERE u.id = $1
+    `, [user_id]);
+
+    res.json({
+      success: true,
+      data: result.rows[0] || null
+    });
+
+  } catch (err) {
+    console.error("❌ My charity error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch user charity"
+    });
+  }
+});
+
+
 // ================== DRAW ==================
 app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
   try {
@@ -264,7 +455,9 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
 
     if (existing.rows.length > 0) {
       return res.status(400).json({
-        error: "Draw already done this month"
+        success: false,
+        code: "DRAW_ALREADY_DONE",
+        message: "Draw already done this month"
       });
     }
 
@@ -274,17 +467,29 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     if (numbers && numbers.length > 0) {
 
       if (numbers.length !== 5) {
-        return res.status(400).json({ error: "Enter exactly 5 numbers" });
+        return res.status(400).json({
+          success: false,
+          code: "INVALID_COUNT",
+          message: "Enter exactly 5 numbers"
+        });
       }
 
       for (let n of numbers) {
         if (n < 1 || n > 45) {
-          return res.status(400).json({ error: "Numbers must be 1–45" });
+          return res.status(400).json({
+            success: false,
+            code: "INVALID_RANGE",
+            message: "Numbers must be between 1 and 45"
+          });
         }
       }
 
       if (new Set(numbers).size !== 5) {
-        return res.status(400).json({ error: "No duplicates allowed" });
+        return res.status(400).json({
+          success: false,
+          code: "DUPLICATE_NUMBERS",
+          message: "Duplicate numbers not allowed"
+        });
       }
 
     } else {
@@ -314,9 +519,12 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     // ===============================
     // 🔥 GET ACTIVE USERS
     // ===============================
-    const usersRes = await pool.query(
-      "SELECT id FROM users WHERE subscription_status='active'"
-    );
+    const usersRes = await pool.query(`
+  SELECT id
+  FROM users
+  WHERE subscription_start <= $1
+  AND subscription_end >= $1
+`, [drawInsert.rows[0].created_at]);
 
     const users = usersRes.rows;
 
@@ -396,9 +604,9 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     // ===============================
     for (let r of results) {
       if (r.match >= 3) {
-        // const amount = Number(share[r.match].toFixed(2));
+        const amount = Number(share[r.match].toFixed(2));
 
-        const amount = Math.floor(share[r.match]);
+        //const amount = Math.floor(share[r.match]);
 
         await pool.query(
           `INSERT INTO winnings (user_id, amount, draw_id, match_type, created_at)
@@ -441,6 +649,7 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     // ✅ RESPONSE
     // ===============================
     res.json({
+      success: true,
       message: "Draw completed ✅",
       numbers,
       winners: {
@@ -452,7 +661,11 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
 
   } catch (err) {
     console.error("❌ Draw error:", err.message);
-    res.status(500).json({ error: "Draw failed ❌" });
+    res.status(500).json({
+      success: false,
+      code: "DRAW_FAILED",
+      message: "Draw failed"
+    });
   }
 });
 
@@ -469,7 +682,11 @@ app.post("/users", async (req, res) => {
     );
 
     if (exists.rows.length > 0) {
-      return res.status(400).json({ error: "User already exists" });
+      return res.status(400).json({
+        success: false,
+        code: "USER_EXISTS",
+        message: "User already exists"
+      });
     }
 
     // 🔍 Check temp users
@@ -514,11 +731,18 @@ app.post("/users", async (req, res) => {
       html: `<h2>Your OTP: ${otp}</h2>`
     });
 
-    res.json({ message: "OTP sent to email" });
+    res.json({
+      success: true,
+      message: "OTP sent to email"
+    });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Signup failed" });
+    console.error("❌ Signup error:", err.message);
+    res.status(500).json({
+      success: false,
+      code: "SIGNUP_FAILED",
+      message: "Signup failed"
+    });
   }
 });
 
@@ -534,17 +758,34 @@ app.post("/verify-otp", async (req, res) => {
     );
 
     if (tempUser.rows.length === 0) {
-      return res.status(400).json({ error: "User not found" });
+      return res.status(400).json({
+        success: false,
+        code: "USER_NOT_FOUND",
+        message: "User not found"
+      });
     }
 
     const user = tempUser.rows[0];
 
     // ⏳ Expiry check
     if (new Date(user.otp_expiry) < new Date()) {
-      return res.status(400).json({ error: "OTP expired" });
+      return res.status(400).json({
+        success: false,
+        code: "OTP_EXPIRED",
+        message: "OTP expired"
+      });
     }
 
-    // ✅ Correct OTP → SUCCESS
+    // 🔒 Block AFTER checking resend case
+    if (user.otp_attempts >= 5) {
+      return res.status(403).json({
+        success: false,
+        code: "OTP_LIMIT_EXCEEDED",
+        message: "Too many attempts. Please resend OTP"
+      });
+    }
+
+    // ✅ Correct OTP
     if (user.otp === otp) {
       await pool.query(
         "INSERT INTO users (email, password, is_verified) VALUES ($1,$2,true)",
@@ -556,13 +797,9 @@ app.post("/verify-otp", async (req, res) => {
         [email]
       );
 
-      return res.json({ message: "Account created ✅" });
-    }
-
-    // 🔒 Block after 5 attempts
-    if (user.otp_attempts >= 5) {
-      return res.status(403).json({
-        error: "Too many attempts. Please resend OTP"
+      return res.json({
+        success: true,
+        message: "Account created ✅"
       });
     }
 
@@ -572,11 +809,19 @@ app.post("/verify-otp", async (req, res) => {
       [email]
     );
 
-    return res.status(400).json({ error: "Invalid OTP" });
+    return res.status(400).json({
+      success: false,
+      code: "INVALID_OTP",
+      message: "Invalid OTP"
+    });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Verification failed" });
+    console.error("❌ OTP verification error:", err.message);
+    res.status(500).json({
+      success: false,
+      code: "OTP_VERIFICATION_FAILED",
+      message: "Verification failed"
+    });
   }
 });
 //=================resend otp========================
@@ -590,7 +835,11 @@ app.post("/resend-otp", async (req, res) => {
     );
 
     if (user.rows.length === 0) {
-      return res.status(400).json({ error: "No pending verification" });
+      return res.status(400).json({
+        success: false,
+        code: "NO_PENDING_VERIFICATION",
+        message: "No pending verification"
+      });
     }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -618,11 +867,18 @@ app.post("/resend-otp", async (req, res) => {
       html: `<h2>Your OTP: ${otp}</h2>`
     });
 
-    res.json({ message: "OTP resent" });
+    res.json({
+      success: true,
+      message: "OTP resent"
+    });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to resend OTP" });
+    console.error("❌ Resend OTP error:", err.message);
+    res.status(500).json({
+      success: false,
+      code: "RESEND_OTP_FAILED",
+      message: "Failed to resend OTP"
+    });
   }
 });
 
@@ -642,19 +898,18 @@ app.post("/check-result", verifyToken, async (req, res) => {
 
     if (!user.subscription_end) {
       return res.status(403).json({
-        error: "⚠️ Please subscribe to check results"
+        success: false,
+        code: "NOT_SUBSCRIBED",
+        message: "Please subscribe to check results"
       });
     }
 
     if (new Date(user.subscription_end) < new Date()) {
       return res.status(403).json({
-        error: `❌ Subscription expired on ${new Date(
-          user.subscription_end
-        ).toLocaleDateString("en-IN", {
-          day: "2-digit",
-          month: "short",
-          year: "numeric"
-        })}`
+        success: false,
+        code: "SUBSCRIPTION_EXPIRED",
+        message: "Subscription expired",
+        expiry: user.subscription_end
       });
     }
 
@@ -666,7 +921,10 @@ app.post("/check-result", verifyToken, async (req, res) => {
     `);
 
     if (draw.rows.length === 0) {
-      return res.json({ result: "No draw yet" });
+      return res.json({
+        success: true,
+        result: "No draw yet"
+      });
     }
 
     const drawNumber = draw.rows[0].numbers;
@@ -712,6 +970,7 @@ app.post("/check-result", verifyToken, async (req, res) => {
 
     // ✅ just return result (NO calculation)
     res.json({
+      success: true,
       result: resultText,
       matches: matchCount,
       numbers: drawNumber,
@@ -720,7 +979,11 @@ app.post("/check-result", verifyToken, async (req, res) => {
 
   } catch (err) {
     console.error("❌ Result error:", err.message);
-    res.status(500).json({ error: "Result failed ❌" });
+    res.status(500).json({
+      success: false,
+      code: "RESULT_FAILED",
+      message: "Failed to fetch result"
+    });
   }
 });
 
@@ -732,16 +995,24 @@ app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
 
     // ✅ Step 1: Get winning
     const win = await pool.query(
-      "SELECT user_id, amount, status FROM winnings WHERE id = $1",
+      "SELECT * FROM winnings WHERE id=$1",
       [winning_id]
     );
 
     if (win.rows.length === 0) {
-      return res.status(404).json({ error: "Winning not found ❌" });
+      return res.status(403).json({
+        success: false,
+        code: "UNAUTHORIZED",
+        message: "Not allowed"
+      });
     }
 
     if (win.rows[0].status !== "pending") {
-      return res.status(400).json({ error: "Already processed ❌" });
+      return res.status(400).json({
+        success: false,
+        code: "ALREADY_PROCESSED",
+        message: "Already processed"
+      });
     }
 
     const userId = win.rows[0].user_id;
@@ -787,11 +1058,18 @@ app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
 
     console.log("✅ Charity inserted");
 
-    res.json({ message: "Approved + Charity Added ✅" });
+    res.json({
+      success: true,
+      message: "Approved + Charity Added ✅"
+    });
 
   } catch (err) {
     console.error("❌ FULL ERROR:", err);
-    res.status(500).json({ error: "Failed" });
+    res.status(500).json({
+      success: false,
+      code: "APPROVAL_FAILED",
+      message: "Failed to approve winning"
+    });
   }
 });
 
@@ -811,10 +1089,17 @@ app.get("/all-winnings", verifyToken, verifyAdmin, async (req, res) => {
       JOIN draws d ON d.id = w.draw_id
       ORDER BY d.created_at DESC
     `);
-    res.json(result.rows);
+    res.json({
+      success: true,
+      data: result.rows
+    });
   } catch (err) {
     console.error("❌ Winnings fetch error:", err.message);
-    res.status(500).json({ error: "Fetch failed" });
+    res.status(500).json({
+      success: false,
+      code: "WINNINGS_FETCH_FAILED",
+      message: "Fetch failed"
+    });
   }
 });
 // ================== LOGIN ==================
@@ -828,19 +1113,30 @@ app.post("/login", async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(400).json({ error: "User not found" });
+      return res.status(400).json({
+        success: false,
+        code: "USER_NOT_FOUND",
+        message: "User not found"
+      });
+
     }
 
     const user = result.rows[0];
 
     const match = await bcrypt.compare(password, user.password);
     if (!match) {
-      return res.status(400).json({ error: "Wrong password" });
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_PASSWORD",
+        message: "Wrong password"
+      });
     }
 
     if (!user.is_verified) {
       return res.status(403).json({
-        error: "Please verify your email first ❌"
+        success: false,
+        code: "EMAIL_NOT_VERIFIED",
+        message: "Please verify your email first"
       });
     }
 
@@ -854,6 +1150,7 @@ app.post("/login", async (req, res) => {
     );
 
     res.json({
+      success: true,
       token,
       user: {
         id: user.id,
@@ -864,7 +1161,11 @@ app.post("/login", async (req, res) => {
 
   } catch (err) {
     console.error(" Login error:", err.message);
-    res.status(500).json({ error: "Login failed" });
+    res.status(500).json({
+      success: false,
+      code: "LOGIN_FAILED",
+      message: "Login failed"
+    });
   }
 });
 //=================forgot password========================
@@ -882,7 +1183,12 @@ app.post("/forgot-password", async (req, res) => {
     );
 
     if (user.rows.length === 0) {
-      return res.status(400).json({ error: "User not found" });
+      return res.status(400).json({
+        success: false,
+        code: "USER_NOT_FOUND",
+        message: "User not found"
+      });
+
     }
 
     // 🔐 generate token
@@ -919,11 +1225,15 @@ app.post("/forgot-password", async (req, res) => {
       `
     });
 
-    res.json({ message: "Reset link sent" });
+    res.json({ success: true, message: "Reset link sent" });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
+    console.error("Error:", err.message);
+    res.status(500).json({
+      success: false,
+      code: "SERVER_ERROR",
+      message: "Something went wrong"
+    });
   }
 });
 //=====================reset password========================
@@ -938,7 +1248,11 @@ app.post("/reset-password/:token", async (req, res) => {
     );
 
     if (user.rows.length === 0) {
-      return res.status(400).json({ error: "Invalid or expired token" });
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_TOKEN",
+        message: "Invalid or expired token"
+      });
     }
 
     //const bcrypt = require("bcrypt");
@@ -949,18 +1263,25 @@ app.post("/reset-password/:token", async (req, res) => {
       [hashed, user.rows[0].id]
     );
 
-    res.json({ message: "Password updated" });
+    res.json({ success: true, message: "Password updated" });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
+    console.error("ERROR:", err.message);
+    res.status(500).json({
+      success: false,
+      code: "SERVER_ERROR",
+      message: "Something went wrong"
+    });
   }
 });
 
 // ================== USERS ==================
 app.get("/users", async (req, res) => {
   const result = await pool.query("SELECT id,email FROM users");
-  res.json(result.rows);
+  res.json({
+    success: true,
+    data: result.rows
+  });
 });
 
 // ================== SCORES ==================
@@ -980,7 +1301,9 @@ app.post("/scores", verifyToken, async (req, res) => {
     // ❌ NOT SUBSCRIBED
     if (!end) {
       return res.status(403).json({
-        error: "Please subscribe to add score ❌"
+        success: false,
+        code: "NOT_SUBSCRIBED",
+        message: "Please subscribe first"
       });
     }
     if (new Date(end) < new Date()) {
@@ -991,7 +1314,10 @@ app.post("/scores", verifyToken, async (req, res) => {
       });
 
       return res.status(403).json({
-        error: `Subscription expired on ${formattedDate} ❌ Please renew`
+        success: false,
+        code: "SUBSCRIPTION_EXPIRED",
+        message: `Subscription expired on ${formattedDate}`,
+        expiry: end
       });
     }
 
@@ -1005,7 +1331,9 @@ app.post("/scores", verifyToken, async (req, res) => {
 
     if (drawCheck.rows.length > 0) {
       return res.status(403).json({
-        error: "⚠️ Draw completed. Score entry closed for this month"
+        success: false,
+        code: "DRAW_CLOSED",
+        message: "Score entry closed for this month"
       });
     }
 
@@ -1013,7 +1341,11 @@ app.post("/scores", verifyToken, async (req, res) => {
 
 
     if (score < 1 || score > 45) {
-      return res.status(400).json({ error: "Score 1–45 only" });
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_SCORE",
+        message: "Score must be between 1 and 45"
+      });
     }
 
     // const date = new Date().toLocaleString("en-US", {
@@ -1029,29 +1361,31 @@ app.post("/scores", verifyToken, async (req, res) => {
 
     console.log("🔥 STEP 2 - SCORE INSERTED");
 
-    await pool.query(`
-  UPDATE jackpot SET amount = amount + 10 
-`);
 
     console.log("🔥 STEP 3 - JACKPOT UPDATED");
 
     // ✅ KEEP ONLY LAST 5
-    await pool.query(`
-      DELETE FROM scores
-      WHERE id NOT IN (
-        SELECT id FROM scores
-        WHERE user_id=$1
-        ORDER BY created_at DESC
-        LIMIT 5
-      ) AND user_id=$1
-    `, [user_id]);
+    // await pool.query(`
+    //   DELETE FROM scores
+    //   WHERE id NOT IN (
+    //     SELECT id FROM scores
+    //     WHERE user_id=$1
+    //     ORDER BY created_at DESC
+    //     LIMIT 5
+    //   ) AND user_id=$1
+    // `, [user_id]);
 
-    res.json({ message: "Score saved" });
+    res.json({
+      success: true,
+      message: "Score added successfully"
+    });
 
   } catch (err) {
     console.error("❌ Score error:", err.message);
     res.status(500).json({
-      error: "Something went wrong ❌"
+      success: false,
+      code: "SERVER_ERROR",
+      message: "Something went wrong"
     });
   }
 });
@@ -1064,12 +1398,21 @@ app.get("/scores", async (req, res) => {
       FROM scores     
       JOIN users ON users.id = scores.user_id
       ORDER BY scores.created_at DESC
+      LIMIT 10
     `);
 
-    res.json(result.rows);
+    res.json({
+      success: true,
+      data: result.rows
+    });
+
   } catch (err) {
     console.error("❌ Scores fetch error:", err.message);
-    res.status(500).json({ error: "Error fetching scores" });
+    res.status(500).json({
+      success: false,
+      code: "SCORES_FETCH_FAILED",
+      message: "Error fetching scores"
+    });
   }
 });
 
@@ -1080,14 +1423,25 @@ app.get("/dashboard", verifyToken, async (req, res) => {
     console.log("Dashboard API called:", id);
 
     const user = await pool.query(`
-      SELECT u.*, c.name AS charity_name
-      FROM users u
-      LEFT JOIN charities c ON u.charity_id = c.id
-      WHERE u.id=$1
-    `, [id]);
+  SELECT 
+    u.id,
+    u.email,
+    u.charity_id,
+    u.subscription_status,
+    u.subscription_type,
+    u.subscription_end,
+    c.name AS charity_name
+  FROM users u
+  LEFT JOIN charities c ON u.charity_id = c.id
+  WHERE u.id = $1
+`, [id]);
 
     if (user.rows.length === 0) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({
+        success: false,
+        code: "USER_NOT_FOUND",
+        message: "User not found"
+      });
     }
 
     const scores = await pool.query(`
@@ -1102,6 +1456,7 @@ app.get("/dashboard", verifyToken, async (req, res) => {
     `, [id]);
 
     res.json({
+      success: true,
       user: user.rows[0],
       scores: scores.rows,
       winnings: winnings.rows
@@ -1109,7 +1464,11 @@ app.get("/dashboard", verifyToken, async (req, res) => {
 
   } catch (err) {
     console.error("❌ Dashboard error:", err.message);
-    res.status(500).json({ error: "Dashboard error" });
+    res.status(500).json({
+      success: false,
+      code: "DASHBOARD_FAILED",
+      message: "Dashboard error"
+    });
   }
 });
 
@@ -1123,14 +1482,18 @@ app.post("/verify-payment", verifyToken, async (req, res) => {
       razorpay_signature,
       type
     } = req.body;
+
     const user_id = req.user.id;
 
-    // 🚨 MUST HAVE THESE
     if (!razorpay_payment_id || !type) {
-      return res.status(400).json({ error: "Missing payment data ❌" });
+      return res.status(400).json({
+        success: false,
+        code: "MISSING_PAYMENT_DATA",
+        message: "Missing payment data"
+      });
     }
 
-    // 🔒 SIGNATURE VERIFY (if available)
+    // signature verification
     if (razorpay_order_id && razorpay_signature) {
       const generatedSignature = crypto
         .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
@@ -1138,67 +1501,154 @@ app.post("/verify-payment", verifyToken, async (req, res) => {
         .digest("hex");
 
       if (generatedSignature !== razorpay_signature) {
-        return res.status(400).json({ error: "Invalid signature ❌" });
+        return res.status(400).json({
+          success: false,
+          code: "INVALID_SIGNATURE",
+          message: "Invalid payment signature"
+        });
       }
     }
 
-    // 📅 PLAN LOGIC
+    // plan pricing
     let interval = "30 days";
+    let amount = 100;
+
     if (type === "yearly") {
       interval = "365 days";
+      amount = 1000;   //changed from 1200 → 1000
     }
 
-    // ✅ ACTIVATE + SAVE TYPE
+    // update subscription
     const result = await pool.query(
       `UPDATE users 
-       SET subscription_status = 'active',
-           subscription_type = $2,
-           subscription_end = NOW() + INTERVAL '${interval}'
-       WHERE id = $1
-       RETURNING subscription_status, subscription_type, subscription_end`,
+       SET subscription_status='active',
+           subscription_type=$2,
+           subscription_start=NOW(),
+           subscription_end=NOW() + INTERVAL '${interval}'
+       WHERE id=$1
+       RETURNING *`,
       [user_id, type]
     );
 
-    console.log("PAYMENT VERIFIED:", result.rows[0]);
+    // 🔥 STORE PAYMENT HISTORY
+    await pool.query(
+      `INSERT INTO payments 
+       (user_id, amount, subscription_type, payment_id)
+       VALUES ($1,$2,$3,$4)`,
+      [
+        user_id,
+        amount,
+        type,
+        razorpay_payment_id
+      ]
+    );
 
     res.json({
       success: true,
-      message: "Payment verified & subscription activated ✅",
+      message: "Payment verified",
       data: result.rows[0]
     });
 
   } catch (err) {
-    console.error("❌ Verify payment error:", err.message);
-    res.status(500).json({ error: "Verification failed ❌" });
+    console.error(" Verify payment error:", err.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Verification failed"
+    });
+  }
+});
+
+
+// ========donate to charity========
+app.post("/donate-charity", verifyToken, async (req, res) => {
+  try {
+    const user_id = req.user.id;
+
+    const {
+      razorpay_payment_id,
+      razorpay_order_id,
+      razorpay_signature,
+      charity_name,
+      amount
+    } = req.body;
+
+    if (!charity_name || !amount) {
+      return res.status(400).json({
+        success: false,
+        message: "Charity name and amount required"
+      });
+    }
+
+    // signature verification
+    const generatedSignature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(
+        razorpay_order_id + "|" + razorpay_payment_id
+      )
+      .digest("hex");
+
+    if (generatedSignature !== razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment signature"
+      });
+    }
+
+    // store donation
+    await pool.query(
+      `INSERT INTO charity_donations
+      (user_id, amount, charity_name, winning_id)
+      VALUES ($1,$2,$3,$4)`,
+      [
+        user_id,
+        amount,
+        charity_name,
+        null   // direct donation
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: "Donation successful ❤️"
+    });
+
+  } catch (err) {
+    console.error("DONATION ERROR:", err);
+    res.status(500).json({
+      success: false,
+      message: "Donation failed"
+    });
   }
 });
 
 
 //====================check subscription=========================
-
 app.post("/activate-subscription", verifyToken, async (req, res) => {
   try {
     const user_id = req.user.id;
 
     const result = await pool.query(
       `UPDATE users 
-       SET subscription_status = 'active',
+       SET subscription_status='active',
            subscription_end = NOW() + INTERVAL '30 days'
-       WHERE id = $1
-       RETURNING subscription_status, subscription_end`,
+       WHERE id=$1
+       RETURNING *`,
       [user_id]
     );
 
-    console.log("ACTIVATED:", result.rows[0]);
-
     res.json({
-      message: "Subscription activated ✅",
+      success: true,
       data: result.rows[0]
     });
 
   } catch (err) {
-    console.error("❌ Activate subscription error:", err.message);
-    res.status(500).json({ error: "Activation failed" });
+    console.error(" Activate subscription error:", err.message);
+    res.status(500).json({
+      success: false,
+      code: "SUBSCRIPTION_ACTIVATION_FAILED",
+      message: "Activation failed"
+    });
   }
 });
 
@@ -1222,13 +1672,18 @@ app.post("/check-subscription", verifyToken, async (req, res) => {
     `, [user_id]);
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({
+        success: false,
+        code: "USER_NOT_FOUND",
+        message: "User not found"
+      });
     }
 
     const user = result.rows[0];
 
     res.json({
       success: true,
+      code: user.real_status === "active" ? "ACTIVE" : "INACTIVE",
       status: user.real_status,
       subscription_type: user.subscription_type,
       subscription_end: user.subscription_end
@@ -1236,22 +1691,34 @@ app.post("/check-subscription", verifyToken, async (req, res) => {
 
   } catch (err) {
     console.error("❌ Check subscription error:", err.message);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({
+      success: false,
+      code: "SERVER_ERROR",
+      message: "Something went wrong"
+    });
   }
 });
 
 // ================== LEADERBOARD ==================
 app.get("/leaderboard", async (req, res) => {
   const result = await pool.query(`
-    SELECT u.email, MAX(s.score) as best_score
-    FROM scores s
-    JOIN users u ON u.id = s.user_id
-    GROUP BY u.email
-    ORDER BY best_score DESC
-    LIMIT 5
-  `);
+  SELECT u.email, MAX(s.score) AS best_score
+  FROM (
+    SELECT *,
+           ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) AS rn
+    FROM scores
+  ) s
+  JOIN users u ON u.id = s.user_id
+  WHERE s.rn <= 5
+  GROUP BY u.id, u.email
+  ORDER BY best_score DESC
+  LIMIT 5;
+`);
 
-  res.json(result.rows);
+  res.json({
+    success: true,
+    data: result.rows
+  });
 });
 //===================jackpot=============
 app.get("/jackpot", async (req, res) => {
@@ -1271,13 +1738,18 @@ app.get("/jackpot", async (req, res) => {
     const basePool = activeUsers * 100;
 
     res.json({
+      success: true,
       jackpot: result.rows[0]?.amount || 0,
       basePool // 🔥 THIS WAS MISSING
     });
 
   } catch (err) {
     console.error("❌ Jackpot error:", err.message);
-    res.status(500).json({ error: "Failed to fetch jackpot" });
+    res.status(500).json({
+      success: false,
+      code: "JACKPOT_FETCH_FAILED",
+      message: "Failed to fetch jackpot"
+    });
   }
 });
 
@@ -1285,14 +1757,27 @@ app.get("/jackpot", async (req, res) => {
 
 //===================reject button===========
 app.post("/reject-winning", verifyToken, verifyAdmin, async (req, res) => {
-  const { winning_id } = req.body;
+  try {
+    const { winning_id } = req.body;
 
-  await pool.query(
-    "UPDATE winnings SET status='rejected' WHERE id=$1",
-    [winning_id]
-  );
+    await pool.query(
+      "UPDATE winnings SET status='rejected' WHERE id=$1",
+      [winning_id]
+    );
 
-  res.json({ message: "Rejected ❌" });
+    res.json({
+      success: true,
+      message: "Rejected ❌"
+    });
+
+  } catch (err) {
+    console.error("❌ Reject error:", err.message);
+    res.status(500).json({
+      success: false,
+      code: "REJECT_FAILED",
+      message: "Failed to reject winning"
+    });
+  }
 });
 
 
@@ -1300,15 +1785,20 @@ app.post("/reject-winning", verifyToken, verifyAdmin, async (req, res) => {
 app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
   try {
     // 🔥 1️⃣ Get ONLY ACTIVE (subscribed) users
+    const drawDate = req.body.drawDate || new Date();
+
     const usersRes = await pool.query(`
-      SELECT id, email FROM users 
-      WHERE subscription_status = 'active'
-    `);
+  SELECT id, email
+  FROM users
+  WHERE subscription_start <= $1
+  AND subscription_end >= $1
+`, [drawDate]);
 
     const users = usersRes.rows;
 
     if (users.length === 0) {
       return res.json({
+        success: true,
         numbers: [],
         results: [],
         message: "No active users"
@@ -1317,9 +1807,12 @@ app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
 
     // 📊 2️⃣ Get all scores (latest first)
     const scoresRes = await pool.query(`
-      SELECT user_id, score 
-      FROM scores 
-      ORDER BY created_at DESC
+            SELECT * FROM (
+          SELECT *,
+          ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) as rn
+          FROM scores
+        ) t
+        WHERE rn <= 5;
     `);
 
     // 👤 3️⃣ Last 5 scores per user
@@ -1349,6 +1842,7 @@ app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
 
     if (allScores.length === 0) {
       return res.json({
+        success: true,
         numbers: [],
         results: [],
         message: "No scores found"
@@ -1433,16 +1927,21 @@ app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
 
     // 📤 7️⃣ Response
     res.json({
+      success: true,
       numbers,
       results,
-      poolAmount
+      basePool,
+      jackpot: previousJackpot,
+      totalPool: poolAmount
     });
 
   } catch (err) {
     console.error("❌ Simulation error:", err.message);
     res.status(500).json({
-      error: "Simulation failed ❌"
-    });
+      success: false,
+      code: "SIMULATION_FAILED",
+      message: "Simulation failed"
+    })
   }
 });
 
@@ -1463,10 +1962,17 @@ app.post("/create-order", verifyToken, async (req, res) => {
       receipt: "receipt_" + Date.now(),
     });
 
-    res.json(order);
+    res.json({
+      success: true,
+      data: order
+    });
   } catch (err) {
     console.error("ORDER ERROR:", err);
-    res.status(500).json({ error: "Order creation failed" });
+    res.status(500).json({
+      success: false,
+      code: "ORDER_FAILED",
+      message: "Order creation failed"
+    });
   }
 });
 //==============admin stats============
@@ -1475,74 +1981,135 @@ app.get("/admin-stats", async (req, res) => {
   try {
     const users = await pool.query("SELECT COUNT(*) FROM users");
 
-    const paid = await pool.query(
-      "SELECT COALESCE(SUM(amount),0) FROM winnings WHERE status='paid'"
-    );
+    const paid = await pool.query(`
+      SELECT COALESCE(SUM(amount),0) AS total 
+      FROM winnings 
+      WHERE status='paid'
+    `);
 
-    const pending = await pool.query(
-      "SELECT COALESCE(SUM(amount),0) FROM winnings WHERE status='pending'"
-    );
+    const pending = await pool.query(`
+      SELECT COALESCE(SUM(amount),0) AS total 
+      FROM winnings 
+      WHERE status='pending'
+    `);
 
     const totalWinnings = await pool.query(
       "SELECT COUNT(*) FROM winnings"
     );
 
-    // 🔥 NEW: TOTAL CHARITY
-    const charity = await pool.query(
-      "SELECT COALESCE(SUM(amount),0) FROM charity_donations"
-    );
+    const charity = await pool.query(`
+      SELECT COALESCE(SUM(amount),0) AS total 
+      FROM charity_donations
+    `);
 
     res.json({
+      success: true,
       users: users.rows[0].count,
-      paid: paid.rows[0].coalesce,
-      pending: pending.rows[0].coalesce,
+      paid: paid.rows[0].total,
+      pending: pending.rows[0].total,
       totalWinnings: totalWinnings.rows[0].count,
-      totalCharity: charity.rows[0].coalesce   // ✅ NEW
+      totalCharity: charity.rows[0].total
     });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
+    console.error("ERROR:", err.message);
+    res.status(500).json({
+      success: false,
+      code: "SERVER_ERROR",
+      message: "Something went wrong"
+    });
   }
 });
 
 //==================admin-analytics=============
 app.get("/admin-analytics", async (req, res) => {
   try {
-    // ✅ Monthly earnings
-    const monthly = await pool.query(`
-      SELECT 
-        DATE_TRUNC('month', created_at) AS month,
-        TO_CHAR(DATE_TRUNC('month', created_at), 'Mon YYYY') AS name,
-        SUM(amount) AS amount
-      FROM winnings
-      GROUP BY month
-      ORDER BY month
+
+    // total earnings from actual payments
+    const earnings = await pool.query(`
+      SELECT COALESCE(SUM(amount),0) AS total
+      FROM payments
     `);
 
-    // ✅ Total earnings
-    const total = await pool.query(
-      "SELECT SUM(amount) AS total FROM winnings"
-    );
+    const totalEarnings = Number(earnings.rows[0].total) || 0;
 
-    // ✅ Avg winning
-    const avg = await pool.query(
-      "SELECT AVG(amount) AS avg FROM winnings"
+    // total paid winnings
+    const paid = await pool.query(`
+      SELECT COALESCE(SUM(amount),0) AS total
+      FROM winnings
+      WHERE status='paid'
+    `);
+
+    const totalPaid = Number(paid.rows[0].total) || 0;
+
+    // pending winnings
+    const pending = await pool.query(`
+      SELECT COALESCE(SUM(amount),0) AS total
+      FROM winnings
+      WHERE status='pending'
+    `);
+
+    const totalPending = Number(pending.rows[0].total) || 0;
+
+    // monthly analytics
+    const monthly = await pool.query(`
+      WITH monthly_payments AS (
+        SELECT
+          DATE_TRUNC('month', created_at) AS month,
+          SUM(amount) AS total_pool
+        FROM payments
+        GROUP BY month
+      ),
+
+      monthly_paid AS (
+        SELECT
+          DATE_TRUNC('month', created_at) AS month,
+          SUM(amount) AS paid
+        FROM winnings
+        WHERE status='paid'
+        GROUP BY month
+      )
+
+      SELECT
+        TO_CHAR(COALESCE(mp.month, mw.month), 'Mon YYYY') AS name,
+        COALESCE(mp.total_pool,0) AS total_pool,
+        COALESCE(mw.paid,0) AS paid,
+
+        (
+          COALESCE(mp.total_pool,0)
+          - COALESCE(mw.paid,0)
+          - (COALESCE(mp.total_pool,0) * 0.4)
+        ) AS revenue
+
+      FROM monthly_payments mp
+      FULL OUTER JOIN monthly_paid mw
+      ON mp.month = mw.month
+
+      ORDER BY COALESCE(mp.month, mw.month)
+    `);
+
+    const profit = monthly.rows.reduce((acc, item) =>
+      acc + Number(item.revenue), 0
     );
 
     res.json({
-      monthly: monthly.rows,
-      totalEarnings: total.rows[0].total || 0,
-      avgWinning: avg.rows[0].avg || 0
+      success: true,
+      totalEarnings,
+      totalPaid,
+      totalPending,
+      profit,
+      monthly: monthly.rows
     });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
+    console.error("❌ ADMIN ANALYTICS ERROR:", err.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Something went wrong"
+    });
   }
 });
-
-
 
 // =============breakdown charity=====
 
@@ -1553,7 +2120,205 @@ app.get("/charity-breakdown", async (req, res) => {
     GROUP BY charity_name
   `);
 
-  res.json(result.rows);
+  res.json({
+    success: true,
+    data: result.rows
+  });
+});
+
+
+
+// ================== DELETE CHARITY ==================
+app.delete("/charities/:id", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 🔍 Check if any user is using this charity
+    const check = await pool.query(
+      "SELECT COUNT(*) FROM users WHERE charity_id = $1",
+      [id]
+    );
+
+    const count = Number(check.rows[0].count);
+
+    if (count > 0) {
+      return res.status(400).json({
+        success: false,
+        code: "CHARITY_IN_USE",
+        message: "Charity is in use by users ❌"
+      });
+    }
+
+    // ✅ DELETE IMAGES FIRST (ADD THIS HERE)
+    await pool.query(
+      "DELETE FROM charity_images WHERE charity_id=$1",
+      [id]
+    );
+
+    // ✅ THEN DELETE CHARITY
+    await pool.query(
+      "DELETE FROM charities WHERE id = $1",
+      [id]
+    );
+
+    res.json({
+      success: true,
+      message: "Charity deleted ✅"
+    });
+
+  } catch (err) {
+    console.error("❌ Delete charity error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Delete failed"
+    });
+  }
+});
+
+
+// =======Edit charity========
+// app.put(
+//   "/charities/:id",
+//   verifyToken,
+//   verifyAdmin,
+//   upload.array("images", 5),
+//   async (req, res) => {
+//     try {
+//       const { id } = req.params;
+//       const { name, description } = req.body;
+
+//       // ✅ update text
+//       await pool.query(
+//         "UPDATE charities SET name=$1, description=$2 WHERE id=$3",
+//         [name, description, id]
+//       );
+
+//       // ✅ ONLY ADD new images (DON'T DELETE OLD)
+//       if (req.files && req.files.length > 0) {
+//         for (let file of req.files) {
+//           const path = file.path;
+
+//           await pool.query(
+//             "INSERT INTO charity_images (charity_id, image) VALUES ($1,$2)",
+//             [id, path]
+//           );
+//         }
+//       }
+
+//       res.json({
+//         success: true,
+//         message: "Charity updated ✅"
+//       });
+
+//     } catch (err) {
+//       console.error("❌ Update charity error:", err.message);
+//       res.status(500).json({
+//         success: false,
+//         message: "Update failed"
+//       });
+//     }
+//   }
+// );
+
+app.put(
+  "/charities/:id",
+  verifyToken,
+  verifyAdmin,
+  upload.array("images", 5),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { name, description } = req.body;
+
+      if (!name) {
+        return res.status(400).json({
+          success: false,
+          message: "Name is required"
+        });
+      }
+
+      await pool.query(
+        "UPDATE charities SET name=$1, description=$2 WHERE id=$3",
+        [name, description, id]
+      );
+
+      if (req.files && req.files.length > 0) {
+        for (let file of req.files) {
+          if (!file.path) {
+            console.error("❌ Missing file path:", file);
+            continue;
+          }
+
+          await pool.query(
+            "INSERT INTO charity_images (charity_id, image) VALUES ($1,$2)",
+            [id, file.path]
+          );
+        }
+      }
+
+      res.json({
+        success: true,
+        message: "Charity updated ✅"
+      });
+
+    } catch (err) {
+      console.error("❌ Update charity error FULL:", err);
+      res.status(500).json({
+        success: false,
+        message: "Update failed"
+      });
+    }
+  }
+);
+
+
+//=========delete charity image========
+app.delete("/charity-image", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.body;
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: "Image id required"
+      });
+    }
+
+    // 🔥 1. Get image URL from DB
+    const result = await pool.query(
+      "SELECT image FROM charity_images WHERE id=$1",
+      [id]
+    );
+
+    const imageUrl = result.rows[0]?.image;
+
+    // 🔥 2. Delete from Cloudinary
+    if (imageUrl) {
+      const parts = imageUrl.split("/");
+      const fileName = parts[parts.length - 1]; // abc123.jpg
+      const publicId = "charities/" + fileName.split(".")[0];
+
+      await cloudinary.uploader.destroy(publicId);
+    }
+
+    // 🔥 3. Delete from DB
+    await pool.query(
+      "DELETE FROM charity_images WHERE id=$1",
+      [id]
+    );
+
+    res.json({
+      success: true,
+      message: "Image deleted from Cloudinary + DB ✅"
+    });
+
+  } catch (err) {
+    console.error("❌ Delete charity image error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Delete failed"
+    });
+  }
 });
 // ================== SERVER ==================
 const PORT = process.env.PORT || 5000;
