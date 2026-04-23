@@ -30,17 +30,7 @@ app.use(express.json());
   }
 })();
 
-// const fs = require("fs");
 
-// // main uploads folder
-// if (!fs.existsSync("uploads")) {
-//   fs.mkdirSync("uploads");
-// }
-
-// // 🔥 new charities folder
-// if (!fs.existsSync("uploads/charities")) {
-//   fs.mkdirSync("uploads/charities", { recursive: true });
-// }
 
 
 //================Multer============================
@@ -54,7 +44,7 @@ cloudinary.config({
   api_secret: process.env.CLOUD_SECRET,
 });
 
-// 🔥 storage (REPLACE diskStorage)
+// storage (REPLACE diskStorage)
 const storage = new CloudinaryStorage({
   cloudinary,
   params: async (req, file) => {
@@ -72,7 +62,7 @@ const storage = new CloudinaryStorage({
   },
 });
 
-// 🔥 upload
+//  upload
 const upload = multer({
   storage,
   limits: { fileSize: 2 * 1024 * 1024 },
@@ -203,7 +193,7 @@ app.post("/upload-proof", verifyToken, upload.single("proof"), async (req, res) 
       });
     }
     const filePath = req.file.path;
-    // 🔥 GET winningId FROM FRONTEND
+    //  GET winningId FROM FRONTEND
     const { winningId } = req.body;
 
     if (!winningId) {
@@ -240,14 +230,14 @@ app.get("/charities", async (req, res) => {
      SELECT 
   c.*,
 
-  -- ✅ correct user count
+  --  correct user count
   (
     SELECT COUNT(*)
     FROM users u
     WHERE u.charity_id = c.id
   ) AS users_count,
 
-  -- ✅ correct images (NO DUPLICATES)
+  --  correct images (NO DUPLICATES)
   COALESCE(
     (
       SELECT JSON_AGG(
@@ -302,7 +292,7 @@ app.post(
 
           await pool.query(
             "INSERT INTO charity_images (charity_id, image) VALUES ($1,$2)",
-            [charityId, file.path] // ✅ FIX
+            [charityId, file.path] 
           );
         }
       }
@@ -328,7 +318,7 @@ app.post("/select-charity", verifyToken, async (req, res) => {
     const { charity_id } = req.body;
 
     // ===============================
-    // 🔒 SUBSCRIPTION CHECK
+    //  SUBSCRIPTION CHECK
     // ===============================
     const sub = await pool.query(
       "SELECT subscription_end FROM users WHERE id=$1",
@@ -355,7 +345,7 @@ app.post("/select-charity", verifyToken, async (req, res) => {
     }
 
     // ===============================
-    // ✅ CHECK CHARITY EXISTS
+    //  CHECK CHARITY EXISTS
     // ===============================
     const charityCheck = await pool.query(
       "SELECT id FROM charities WHERE id=$1",
@@ -371,7 +361,7 @@ app.post("/select-charity", verifyToken, async (req, res) => {
     }
 
     // ===============================
-    // 🚫 CHECK ALREADY SELECTED (PUT HERE)
+    //  CHECK ALREADY SELECTED (PUT HERE)
     // ===============================
     const already = await pool.query(
       "SELECT charity_id FROM users WHERE id=$1",
@@ -387,7 +377,7 @@ app.post("/select-charity", verifyToken, async (req, res) => {
     }
 
     // ===============================
-    // ✅ UPDATE
+    //  UPDATE
     // ===============================
     await pool.query(
       "UPDATE users SET charity_id=$1 WHERE id=$2",
@@ -445,7 +435,7 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     let { numbers } = req.body;
 
     // ===============================
-    // ✅ MONTHLY CHECK
+    // MONTHLY CHECK
     // ===============================
     const existing = await pool.query(`
       SELECT * FROM draws
@@ -462,7 +452,7 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     }
 
     // ===============================
-    // 🔥 MANUAL NUMBERS (POSTMAN)
+    //  MANUAL NUMBERS (POSTMAN)
     // ===============================
     if (numbers && numbers.length > 0) {
 
@@ -494,7 +484,7 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
 
     } else {
       // ===============================
-      // 🔥 RANDOM GENERATION
+      //  RANDOM GENERATION
       // ===============================
       numbers = [];
 
@@ -507,7 +497,7 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     }
 
     // ===============================
-    // ✅ SAVE DRAW
+    // SAVE DRAW
     // ===============================
     const drawInsert = await pool.query(
       "INSERT INTO draws (numbers, created_at) VALUES ($1, NOW()) RETURNING *",
@@ -517,7 +507,7 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     const drawId = drawInsert.rows[0].id;
 
     // ===============================
-    // 🔥 GET ACTIVE USERS
+    //  GET ACTIVE USERS
     // ===============================
     const usersRes = await pool.query(`
   SELECT id
@@ -529,7 +519,7 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     const users = usersRes.rows;
 
     // ===============================
-    // 🔥 GET SCORES
+    //  GET SCORES
     // ===============================
     const scoresRes = await pool.query(`
       SELECT user_id, score 
@@ -547,7 +537,7 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     });
 
     // ===============================
-    // 🔥 MATCH CALCULATION
+    //  MATCH CALCULATION
     // ===============================
     const results = [];
 
@@ -569,14 +559,14 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     });
 
     // ===============================
-    // 🔥 COUNT WINNERS
+    //  COUNT WINNERS
     // ===============================
     const count3 = results.filter(r => r.match === 3).length;
     const count4 = results.filter(r => r.match === 4).length;
     const count5 = results.filter(r => r.match >= 5).length;
 
     // ===============================
-    // 🔥 POOL CALCULATION
+    //  POOL CALCULATION
     // ===============================
     const jackpotRes = await pool.query(
       "SELECT amount FROM jackpot LIMIT 1"
@@ -588,10 +578,9 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     const basePool = users.length * 100;
     const poolAmount = basePool + previousJackpot;
 
+    
     // ===============================
-    // 🔥 PRIZE DISTRIBUTION (CORRECT)
-    // ===============================
-    // 🔥 PRIZE DISTRIBUTION (FINAL LOGIC)
+    // PRIZE DISTRIBUTION (FINAL LOGIC)
     const share = {
       3: count3 ? (basePool * 0.25) / count3 : 0,
       4: count4 ? (basePool * 0.35) / count4 : 0,
@@ -600,7 +589,7 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
         : 0
     };
     // ===============================
-    // 🔥 SAVE WINNINGS
+    //  SAVE WINNINGS
     // ===============================
     for (let r of results) {
       if (r.match >= 3) {
@@ -627,7 +616,7 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
     }
 
     // ===============================
-    // 🎯 JACKPOT LOGIC
+    //  JACKPOT LOGIC
     // ===============================
     if (count5 === 0) {
       const newJackpot =
@@ -646,7 +635,7 @@ app.post("/draw", verifyToken, verifyAdmin, async (req, res) => {
 
 
     // ===============================
-    // ✅ RESPONSE
+    //  RESPONSE
     // ===============================
     res.json({
       success: true,
@@ -689,34 +678,34 @@ app.post("/users", async (req, res) => {
       });
     }
 
-    // 🔍 Check temp users
+    //  Check temp users
     const temp = await pool.query(
       "SELECT * FROM temp_users WHERE email=$1",
       [email]
     );
 
-    // 🔐 hash password
+    // hash password
     const hash = await bcrypt.hash(password, 10);
 
-    // 🔢 OTP
+    //  OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiry = new Date(Date.now() + 10 * 60 * 1000);
 
     if (temp.rows.length > 0) {
-      // 🔁 UPDATE existing temp user
+      //  UPDATE existing temp user
       await pool.query(
         "UPDATE temp_users SET password=$1, otp=$2, otp_expiry=$3, otp_attempts=0 WHERE email=$4",
         [hash, otp, expiry, email]
       );
     } else {
-      // 🆕 INSERT new temp user
+      // INSERT new temp user
       await pool.query(
         "INSERT INTO temp_users (email, password, otp, otp_expiry, otp_attempts) VALUES ($1,$2,$3,$4,0)",
         [email, hash, otp, expiry]
       );
     }
 
-    // 📧 Send OTP
+    //  Send OTP
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
@@ -767,7 +756,7 @@ app.post("/verify-otp", async (req, res) => {
 
     const user = tempUser.rows[0];
 
-    // ⏳ Expiry check
+    //  Expiry check
     if (new Date(user.otp_expiry) < new Date()) {
       return res.status(400).json({
         success: false,
@@ -776,7 +765,7 @@ app.post("/verify-otp", async (req, res) => {
       });
     }
 
-    // 🔒 Block AFTER checking resend case
+    //  Block AFTER checking resend case
     if (user.otp_attempts >= 5) {
       return res.status(403).json({
         success: false,
@@ -785,7 +774,7 @@ app.post("/verify-otp", async (req, res) => {
       });
     }
 
-    // ✅ Correct OTP
+    //  OTP
     if (user.otp === otp) {
       await pool.query(
         "INSERT INTO users (email, password, is_verified) VALUES ($1,$2,true)",
@@ -803,7 +792,7 @@ app.post("/verify-otp", async (req, res) => {
       });
     }
 
-    // ❌ Wrong OTP → increase attempts
+    //  Wrong OTP → increase attempts
     await pool.query(
       "UPDATE temp_users SET otp_attempts = otp_attempts + 1 WHERE email=$1",
       [email]
@@ -845,7 +834,7 @@ app.post("/resend-otp", async (req, res) => {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiry = new Date(Date.now() + 10 * 60 * 1000);
 
-    // ✅ UPDATE (not INSERT)
+    
     await pool.query(
       `UPDATE temp_users 
        SET otp=$1, otp_expiry=$2, otp_attempts=0
@@ -888,7 +877,7 @@ app.post("/check-result", verifyToken, async (req, res) => {
   try {
     const user_id = req.user.id;
 
-    // ✅ subscription check
+    //  subscription check
     const userRes = await pool.query(
       "SELECT subscription_end FROM users WHERE id=$1",
       [user_id]
@@ -913,7 +902,7 @@ app.post("/check-result", verifyToken, async (req, res) => {
       });
     }
 
-    // ✅ get latest draw
+    // get latest draw
     const draw = await pool.query(`
       SELECT * FROM draws
       ORDER BY created_at DESC
@@ -930,7 +919,7 @@ app.post("/check-result", verifyToken, async (req, res) => {
     const drawNumber = draw.rows[0].numbers;
     const drawDate = draw.rows[0].created_at;
 
-    // ✅ get user scores
+    //  get user scores
     const scores = await pool.query(
       "SELECT score FROM scores WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5",
       [user_id]
@@ -938,7 +927,7 @@ app.post("/check-result", verifyToken, async (req, res) => {
 
     const userNumbers = scores.rows.map(s => Number(s.score));
 
-    // ✅ match logic
+    //  match logic
     const countMatches = (userScores, drawNumbers) => {
       const temp = [...drawNumbers];
       let match = 0;
@@ -961,14 +950,8 @@ app.post("/check-result", verifyToken, async (req, res) => {
     else if (matchCount === 4) resultText = "4 Match 🔥";
     else if (matchCount >= 5) resultText = "5 Match 🏆";
 
-    // // JACKPOT RESET
-    // if (matchCount >= 5) {
-    //   await pool.query(`
-    // UPDATE jackpot SET amount = 0
-    // `);
-    // }
-
-    // ✅ just return result (NO calculation)
+   
+    
     res.json({
       success: true,
       result: resultText,
@@ -991,9 +974,9 @@ app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { winning_id } = req.body;
 
-    console.log("🔥 Approve clicked:", winning_id);
+    console.log(" Approve clicked:", winning_id);
 
-    // ✅ Step 1: Get winning
+    //  Step 1: Get winning
     const win = await pool.query(
       "SELECT * FROM winnings WHERE id=$1",
       [winning_id]
@@ -1020,16 +1003,16 @@ app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
 
     console.log("User:", userId, "Amount:", amount);
 
-    // ✅ Step 2: Update status
+    //  Step 2: Update status
     await pool.query(
       "UPDATE winnings SET status = 'paid' WHERE id = $1",
       [winning_id]
     );
 
-    // ✅ Step 3: Charity calculation
+    // Step 3: Charity calculation
     const charityAmount = amount * 0.1;
 
-    // 🔥 NEW: Get user's selected charity
+    //  NEW: Get user's selected charity
     const userCharity = await pool.query(
       `SELECT c.name 
        FROM users u
@@ -1043,7 +1026,7 @@ app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
 
     console.log("Charity:", charityName);
 
-    // ✅ Step 4: Insert donation
+    //  Step 4: Insert donation
     await pool.query(
       `INSERT INTO charity_donations 
        (user_id, amount, charity_name, winning_id)
@@ -1051,7 +1034,7 @@ app.post("/approve-winning", verifyToken, verifyAdmin, async (req, res) => {
       [
         userId,
         charityAmount,
-        charityName,   // ✅ dynamic now
+        charityName,   
         winning_id
       ]
     );
@@ -1170,8 +1153,7 @@ app.post("/login", async (req, res) => {
 });
 //=================forgot password========================
 
-//const crypto = require("crypto");
-//const nodemailer = require("nodemailer");
+
 
 app.post("/forgot-password", async (req, res) => {
   const { email } = req.body;
@@ -1191,19 +1173,19 @@ app.post("/forgot-password", async (req, res) => {
 
     }
 
-    // 🔐 generate token
+    //  generate token
     const token = crypto.randomBytes(32).toString("hex");
 
-    // ⏳ expiry (1 hour)
+    //  expiry (1 hour)
     const expiry = new Date(Date.now() + 3600000);
 
-    // 💾 store in DB
+    //  store in DB
     await pool.query(
       "UPDATE users SET reset_token=$1, reset_token_expiry=$2 WHERE email=$3",
       [token, expiry, email]
     );
 
-    // 📧 send email
+    //  send email
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
@@ -1290,7 +1272,7 @@ app.post("/scores", verifyToken, async (req, res) => {
     const user_id = req.user.id;
     const { score } = req.body;
 
-    // 🔒 CHECK SUBSCRIPTION
+    //  CHECK SUBSCRIPTION
     const sub = await pool.query(
       "SELECT subscription_end FROM users WHERE id=$1",
       [user_id]
@@ -1298,7 +1280,7 @@ app.post("/scores", verifyToken, async (req, res) => {
 
     const end = sub.rows[0]?.subscription_end;
 
-    // ❌ NOT SUBSCRIBED
+    //  NOT SUBSCRIBED
     if (!end) {
       return res.status(403).json({
         success: false,
@@ -1322,7 +1304,7 @@ app.post("/scores", verifyToken, async (req, res) => {
     }
 
 
-    // 🔒 CHECK IF DRAW ALREADY DONE THIS MONTH
+    //  CHECK IF DRAW ALREADY DONE THIS MONTH
     const drawCheck = await pool.query(`
       SELECT * FROM draws
       WHERE DATE_TRUNC('month', created_at AT TIME ZONE 'Asia/Kolkata') =
@@ -1337,7 +1319,7 @@ app.post("/scores", verifyToken, async (req, res) => {
       });
     }
 
-    // ✅ VALIDATION
+    // VALIDATION
 
 
     if (score < 1 || score > 45) {
@@ -1351,20 +1333,20 @@ app.post("/scores", verifyToken, async (req, res) => {
     // const date = new Date().toLocaleString("en-US", {
     //   timeZone: "Asia/Kolkata"
     // });
-    // ✅ SAVE SCORE
-    console.log("🔥 STEP 1 - API HIT");
+    // SAVE SCORE
+    console.log(" STEP 1 - API HIT");
 
     await pool.query(
       "INSERT INTO scores (user_id, score, created_at) VALUES ($1,$2, NOW())",
       [user_id, score]
     );
 
-    console.log("🔥 STEP 2 - SCORE INSERTED");
+    console.log(" STEP 2 - SCORE INSERTED");
 
 
-    console.log("🔥 STEP 3 - JACKPOT UPDATED");
+    console.log(" STEP 3 - JACKPOT UPDATED");
 
-    // ✅ KEEP ONLY LAST 5
+    //  KEEP ONLY LAST 5
     // await pool.query(`
     //   DELETE FROM scores
     //   WHERE id NOT IN (
@@ -1515,7 +1497,7 @@ app.post("/verify-payment", verifyToken, async (req, res) => {
 
     if (type === "yearly") {
       interval = "365 days";
-      amount = 1000;   //changed from 1200 → 1000
+      amount = 1000;   
     }
 
     // update subscription
@@ -1530,7 +1512,7 @@ app.post("/verify-payment", verifyToken, async (req, res) => {
       [user_id, type]
     );
 
-    // 🔥 STORE PAYMENT HISTORY
+    //  STORE PAYMENT HISTORY
     await pool.query(
       `INSERT INTO payments 
        (user_id, amount, subscription_type, payment_id)
@@ -1727,20 +1709,20 @@ app.get("/jackpot", async (req, res) => {
       "SELECT amount FROM jackpot LIMIT 1"
     );
 
-    // ✅ COUNT ACTIVE USERS
+    //  COUNT ACTIVE USERS
     const usersRes = await pool.query(
       "SELECT COUNT(*) FROM users WHERE subscription_status='active'"
     );
 
     const activeUsers = Number(usersRes.rows[0].count);
 
-    // ✅ BASE POOL
+    // BASE POOL
     const basePool = activeUsers * 100;
 
     res.json({
       success: true,
       jackpot: result.rows[0]?.amount || 0,
-      basePool // 🔥 THIS WAS MISSING
+      basePool 
     });
 
   } catch (err) {
@@ -1784,7 +1766,7 @@ app.post("/reject-winning", verifyToken, verifyAdmin, async (req, res) => {
 // ================= SIMULATE DRAW =================
 app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    // 🔥 1️⃣ Get ONLY ACTIVE (subscribed) users
+    //  Get ONLY ACTIVE (subscribed) users
     const drawDate = req.body.drawDate || new Date();
 
     const usersRes = await pool.query(`
@@ -1805,7 +1787,7 @@ app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    // 📊 2️⃣ Get all scores (latest first)
+    // Get all scores (latest first)
     const scoresRes = await pool.query(`
             SELECT * FROM (
           SELECT *,
@@ -1815,11 +1797,11 @@ app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
         WHERE rn <= 5;
     `);
 
-    // 👤 3️⃣ Last 5 scores per user
+    //  Last 5 scores per user
     const userScoresMap = {};
 
     scoresRes.rows.forEach(s => {
-      // ❗ only active users
+      //  only active users
       if (!users.find(u => u.id === s.user_id)) return;
 
       if (!userScoresMap[s.user_id]) {
@@ -1837,7 +1819,7 @@ app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
       allScores.push(...arr);
     });
 
-    // ❗ duplicates remove
+    //  duplicates remove
     allScores = [...new Set(allScores)];
 
     if (allScores.length === 0) {
@@ -1849,7 +1831,7 @@ app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    // 🎲 5️⃣ Generate numbers FROM USER SCORES ONLY
+    //  Generate numbers FROM USER SCORES ONLY
     const numbers = [];
 
     while (numbers.length < 5 && allScores.length > 0) {
@@ -1861,7 +1843,7 @@ app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
       }
     }
 
-    // 🎯 6️⃣ Match calculation (same as real draw)
+    //  Match calculation (same as real draw)
     const results = [];
 
     users.forEach(u => {
@@ -1886,7 +1868,7 @@ app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
       });
     });
 
-    // 💰 PRIZE CALCULATION
+    //  PRIZE CALCULATION
     const count3 = results.filter(r => r.matchCount === 3).length;
     const count4 = results.filter(r => r.matchCount === 4).length;
     const count5 = results.filter(r => r.matchCount >= 5).length;
@@ -1900,10 +1882,10 @@ app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
     const previousJackpot =
       parseFloat(jackpotRes.rows[0]?.amount) || 0;
 
-    // ✅ RULE:
+    //  RULE:
     const poolAmount = basePool + previousJackpot;
 
-    // 🔥 PRIZE DISTRIBUTION (FINAL LOGIC)
+    //  PRIZE DISTRIBUTION (FINAL LOGIC)
     const share = {
       3: count3 ? (basePool * 0.25) / count3 : 0,
       4: count4 ? (basePool * 0.35) / count4 : 0,
@@ -1925,7 +1907,7 @@ app.post("/simulate-draw", verifyToken, verifyAdmin, async (req, res) => {
       }
     });
 
-    // 📤 7️⃣ Response
+    //  Response
     res.json({
       success: true,
       numbers,
@@ -1957,7 +1939,7 @@ app.post("/create-order", verifyToken, async (req, res) => {
     const { amount } = req.body;
 
     const order = await razorpay.orders.create({
-      amount: amount * 100, // paise
+      amount: amount * 100, 
       currency: "INR",
       receipt: "receipt_" + Date.now(),
     });
@@ -2133,7 +2115,7 @@ app.delete("/charities/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 🔍 Check if any user is using this charity
+    //  Check if any user is using this charity
     const check = await pool.query(
       "SELECT COUNT(*) FROM users WHERE charity_id = $1",
       [id]
@@ -2149,13 +2131,13 @@ app.delete("/charities/:id", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    // ✅ DELETE IMAGES FIRST (ADD THIS HERE)
+   
     await pool.query(
       "DELETE FROM charity_images WHERE charity_id=$1",
       [id]
     );
 
-    // ✅ THEN DELETE CHARITY
+    //  THEN DELETE CHARITY
     await pool.query(
       "DELETE FROM charities WHERE id = $1",
       [id]
@@ -2177,48 +2159,7 @@ app.delete("/charities/:id", verifyToken, verifyAdmin, async (req, res) => {
 
 
 // =======Edit charity========
-// app.put(
-//   "/charities/:id",
-//   verifyToken,
-//   verifyAdmin,
-//   upload.array("images", 5),
-//   async (req, res) => {
-//     try {
-//       const { id } = req.params;
-//       const { name, description } = req.body;
 
-//       // ✅ update text
-//       await pool.query(
-//         "UPDATE charities SET name=$1, description=$2 WHERE id=$3",
-//         [name, description, id]
-//       );
-
-//       // ✅ ONLY ADD new images (DON'T DELETE OLD)
-//       if (req.files && req.files.length > 0) {
-//         for (let file of req.files) {
-//           const path = file.path;
-
-//           await pool.query(
-//             "INSERT INTO charity_images (charity_id, image) VALUES ($1,$2)",
-//             [id, path]
-//           );
-//         }
-//       }
-
-//       res.json({
-//         success: true,
-//         message: "Charity updated ✅"
-//       });
-
-//     } catch (err) {
-//       console.error("❌ Update charity error:", err.message);
-//       res.status(500).json({
-//         success: false,
-//         message: "Update failed"
-//       });
-//     }
-//   }
-// );
 
 app.put(
   "/charities/:id",
@@ -2284,7 +2225,7 @@ app.delete("/charity-image", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    // 🔥 1. Get image URL from DB
+    // 1. Get image URL from DB
     const result = await pool.query(
       "SELECT image FROM charity_images WHERE id=$1",
       [id]
@@ -2292,7 +2233,7 @@ app.delete("/charity-image", verifyToken, verifyAdmin, async (req, res) => {
 
     const imageUrl = result.rows[0]?.image;
 
-    // 🔥 2. Delete from Cloudinary
+    //  2. Delete from Cloudinary
     if (imageUrl) {
       const parts = imageUrl.split("/");
       const fileName = parts[parts.length - 1]; // abc123.jpg
@@ -2301,7 +2242,7 @@ app.delete("/charity-image", verifyToken, verifyAdmin, async (req, res) => {
       await cloudinary.uploader.destroy(publicId);
     }
 
-    // 🔥 3. Delete from DB
+    //  3. Delete from DB
     await pool.query(
       "DELETE FROM charity_images WHERE id=$1",
       [id]
